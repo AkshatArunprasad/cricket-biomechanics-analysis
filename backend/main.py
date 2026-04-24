@@ -3,9 +3,11 @@
 # =============================================================================
 #
 # This file boots up the FastAPI web server and defines the API endpoints that
-# the frontend will talk to.  Right now there is only one endpoint:
+# the frontend will talk to.  The main endpoint is:
 #
-#     POST /upload-video/   →  Accepts an MP4 file, saves it to disk.
+#     POST /upload-video/   →  Accepts an MP4 file, saves it to disk,
+#                               then runs MediaPipe Pose estimation on
+#                               every frame to extract elbow angles.
 #
 # IMPORTANT (8 GB RAM constraint – see vision.md):
 #   We NEVER load an entire video into memory.  Instead we stream incoming
@@ -45,6 +47,33 @@ import uuid
 #     human-readable message when something goes wrong.
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
+# ── Computer-vision & maths imports ──────────────────────────────────────────
+#
+# cv2  (OpenCV)
+#     The industry-standard library for reading and manipulating images/video.
+#     We use it here to open the saved MP4 file and read it ONE FRAME AT A TIME
+#     via cv2.VideoCapture — this keeps memory usage constant regardless of
+#     video length.
+#
+# mediapipe (imported as "mp")
+#     Google's pre-trained machine-learning pipeline for body-pose detection.
+#     We use the new Tasks API (mp.tasks.vision.PoseLandmarker) which requires
+#     a downloaded .task model file.  Given an RGB image, it returns 33 3D
+#     landmarks (joints) on the human body.  We only need three:
+#         Landmark 12 = Right Shoulder
+#         Landmark 14 = Right Elbow
+#         Landmark 16 = Right Wrist
+#
+# numpy (imported as "np")
+#     The go-to library for fast numerical computation in Python.  We use it
+#     to convert landmark coordinates into arrays and calculate the 2D angle
+#     between three joint positions using trigonometry (arctan2).
+
+import cv2
+import mediapipe as mp
+import numpy as np
 
 
 # =============================================================================
@@ -71,6 +100,24 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# ── CORS (Cross-Origin Resource Sharing) ─────────────────────────────────────
+#
+# The React frontend runs on a DIFFERENT port (e.g. http://localhost:5173)
+# than the FastAPI backend (http://localhost:8000).  Browsers block requests
+# between different origins by default — this is a security feature.
+#
+# CORSMiddleware tells the browser: "it's OK, let these origins talk to me."
+# allow_origins=["*"] means "accept requests from ANY origin."  This is fine
+# for local development; in production you'd restrict it to your real domain.
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],       # Which frontends can call us
+    allow_credentials=True,    # Allow cookies / auth headers
+    allow_methods=["*"],       # Allow all HTTP methods (GET, POST, etc.)
+    allow_headers=["*"],       # Allow all request headers
+)
+
 
 # ── Upload directory setup ───────────────────────────────────────────────────
 #
@@ -89,6 +136,76 @@ MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
 # 1 MB strikes a good balance: small enough to keep memory usage low on an
 # 8 GB machine, large enough that we don't make millions of tiny read() calls.
 CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB
+
+
+# =============================================================================
+# Utility: 2D Joint-Angle Calculator
+# =============================================================================
+#
+# This function calculates the interior angle at a "middle" joint given three
+# body landmarks.  For example, to find the elbow flexion angle you'd pass in:
+#
+#     a = shoulder [x, y]
+#     b = elbow    [x, y]   ← the vertex of the angle
+#     c = wrist    [x, y]
+#
+# HOW THE MATHS WORKS:
+#
+#   1. We form two vectors originating at the middle point (b):
+#          vector_ba = a - b   (points from elbow toward shoulder)
+#          vector_bc = c - b   (points from elbow toward wrist)
+#
+#   2. np.arctan2(y, x) gives us the angle each vector makes with the
+#      positive x-axis.  It handles all four quadrants correctly (unlike
+#      plain arctan which only covers -90° to +90°).
+#
+#   3. We subtract the two angles to get the interior angle, convert from
+#      radians to degrees, and normalise to a 0–180° range.
+#
+# RETURNS:
+#   A float in the range [0, 180] representing degrees of flexion.
+#   180° = fully extended arm    ~30° = tightly bent arm
+
+def calculate_angle(a, b, c):
+    """
+    Calculate the 2D interior angle at point *b* formed by the line segments
+    a→b and c→b.
+
+    Parameters
+    ----------
+    a : list or array-like
+        [x, y] coordinates of the first point  (e.g. shoulder).
+    b : list or array-like
+        [x, y] coordinates of the vertex point (e.g. elbow).
+    c : list or array-like
+        [x, y] coordinates of the third point  (e.g. wrist).
+
+    Returns
+    -------
+    float
+        The angle in degrees, clamped to the range [0, 180].
+    """
+
+    # Convert inputs to NumPy arrays so we can do vector maths.
+    a = np.array(a)  # e.g. [0.45, 0.32]
+    b = np.array(b)
+    c = np.array(c)
+
+    # Calculate the angle (in radians) of each vector relative to the x-axis.
+    # np.arctan2(y, x) is used instead of np.arctan(y/x) because it correctly
+    # handles all four quadrants and avoids division-by-zero errors.
+    radians = np.arctan2(c[1] - b[1], c[0] - b[0]) \
+            - np.arctan2(a[1] - b[1], a[0] - b[0])
+
+    # Convert radians → degrees.
+    angle = np.abs(radians * 180.0 / np.pi)
+
+    # Normalise: if the angle came out greater than 180°, flip it so we
+    # always report the interior (smaller) angle.
+    if angle > 180.0:
+        angle = 360.0 - angle
+
+    return angle
 
 
 # =============================================================================
@@ -138,8 +255,9 @@ async def root():
 @app.post("/upload-video/")
 async def upload_video(file: UploadFile = File(...)):
     """
-    Accept an MP4 video upload, stream it to disk in 1 MB chunks, and return
-    the saved filename.
+    Accept an MP4 video upload, stream it to disk in 1 MB chunks, run
+    MediaPipe Pose estimation on every frame, and return the per-frame
+    elbow-angle measurements.
 
     Parameters
     ----------
@@ -151,7 +269,7 @@ async def upload_video(file: UploadFile = File(...)):
     Returns
     -------
     dict
-        JSON with the saved filename and a success message.
+        JSON with the saved filename, frame count, and elbow-angle list.
     """
 
     # ── Step 1: Validate the file type ───────────────────────────────────
@@ -225,48 +343,215 @@ async def upload_video(file: UploadFile = File(...)):
         await file.close()
 
     # ══════════════════════════════════════════════════════════════════════
-    # TODO — MEDIAPIPE POSE ESTIMATION (future implementation)
+    # Step 4 — MediaPipe Pose Estimation (frame-by-frame)
     # ══════════════════════════════════════════════════════════════════════
     #
-    # This is where the biomechanics analysis pipeline will be added:
+    # Now that the video is safely on disk, we open it with OpenCV and feed
+    # each frame to MediaPipe Pose.  The key memory rules:
     #
-    #   1. Open the saved video with OpenCV:
-    #          cap = cv2.VideoCapture(file_path)
+    #   ✓  Read ONE frame at a time with cap.read()
+    #   ✓  Delete (del) the frame as soon as we're done with it
+    #   ✗  NEVER append frames to a list or accumulate images in memory
     #
-    #   2. Initialise MediaPipe Pose:
-    #          mp_pose = mediapipe.solutions.pose
-    #          pose = mp_pose.Pose(static_image_mode=False, ...)
-    #
-    #   3. Loop through frames ONE AT A TIME (memory-efficient):
-    #          while cap.isOpened():
-    #              success, frame = cap.read()
-    #              if not success:
-    #                  break
-    #              # Convert BGR → RGB (MediaPipe expects RGB)
-    #              rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    #              results = pose.process(rgb_frame)
-    #              # Extract landmark coordinates (shoulder, elbow, wrist…)
-    #              # … store kinematic data …
-    #              del frame, rgb_frame  # free memory immediately
-    #
-    #   4. Release resources:
-    #          cap.release()
-    #          pose.close()
-    #
-    #   5. Send the extracted kinematics to the Gemini API for coaching
-    #      feedback (see google-generativeai in requirements.txt).
-    #
-    #   6. Store results in Supabase (PostgreSQL) and return them to the
-    #      frontend.
-    #
-    # All of this will process frames sequentially and delete them from
-    # memory immediately — critical for our 8 GB RAM constraint.
+    # We only store the lightweight numeric angle values (floats).
     # ══════════════════════════════════════════════════════════════════════
 
-    # ── Step 4: Return success response ──────────────────────────────────
+    # ── 4a. Initialise MediaPipe PoseLandmarker (new Tasks API) ──────────
+    #
+    # MediaPipe 0.10.33+ uses the "Tasks API" instead of the old
+    # mp.solutions.pose interface.  The new API requires:
+    #   1. A downloaded .task model file (pose_landmarker_lite.task)
+    #   2. A RunningMode — we use VIDEO because we're processing sequential
+    #      frames with temporal tracking (faster & smoother than IMAGE mode).
+    #   3. A timestamp in milliseconds for each frame.
+    #
+    # BaseOptions points to the model file on disk.
+    # min_pose_detection_confidence = how sure the model must be to detect
+    #                                 a person initially (0.5 = 50%).
+    # min_tracking_confidence       = how sure it must be to keep tracking
+    #                                 across frames (0.5 = 50%).
 
+    # Path to the model file (downloaded to the backend/ directory).
+    MODEL_PATH = os.path.join(os.path.dirname(__file__), "pose_landmarker_lite.task")
+
+    BaseOptions = mp.tasks.BaseOptions
+    PoseLandmarker = mp.tasks.vision.PoseLandmarker
+    PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
+    RunningMode = mp.tasks.vision.RunningMode
+    PoseLandmark = mp.tasks.vision.PoseLandmark
+
+    options = PoseLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=MODEL_PATH),
+        running_mode=RunningMode.VIDEO,
+        num_poses=1,
+        min_pose_detection_confidence=0.5,
+        min_pose_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
+
+    landmarker = PoseLandmarker.create_from_options(options)
+
+    # ── 4b. Open the saved video with OpenCV ─────────────────────────────
+    #
+    # cv2.VideoCapture opens the file and lets us read it frame-by-frame.
+    # It does NOT load the whole video into RAM — it reads from disk on
+    # each call to cap.read().
+
+    cap = cv2.VideoCapture(file_path)
+
+    if not cap.isOpened():
+        # If OpenCV can't open the file, inform the client.
+        landmarker.close()
+        raise HTTPException(
+            status_code=400,
+            detail="OpenCV could not open the uploaded video. The file may be corrupted.",
+        )
+
+    # Get the video's frames-per-second so we can compute timestamps.
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+
+    # We'll collect the per-frame elbow angles in a simple list of floats.
+    # Even for long videos this is tiny:  36,000 frames × 8 bytes = ~0.3 MB.
+    elbow_angles = []
+    frame_count = 0
+
+    # ── 4c. Frame-by-frame processing loop ───────────────────────────────
+    #
+    # This is the heart of the pipeline.  For EVERY frame in the video:
+    #   1. Read it from disk
+    #   2. Convert colour space (BGR → RGB)
+    #   3. Run pose detection
+    #   4. Extract joint coordinates & calculate angle
+    #   5. Immediately free the frame from memory
+
+    try:
+        angle_data = []
+        frame_count = 0
+        while cap.isOpened():
+            # cap.read() returns two values:
+            #   success (bool) – True if a frame was read, False at end-of-video
+            #   frame (numpy array) – the image data in BGR colour format
+            success, frame = cap.read()
+
+            if not success:
+                # No more frames — we've reached the end of the video.
+                break
+
+            frame_count += 1
+
+            # ── Convert BGR → RGB ────────────────────────────────────
+            #
+            # OpenCV reads frames in BGR (Blue-Green-Red) order, but
+            # MediaPipe expects RGB (Red-Green-Blue).  This one-liner
+            # swaps the colour channels.
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # ── Wrap in a MediaPipe Image ─────────────────────────────
+            #
+            # The new Tasks API requires an mp.Image object instead of
+            # a raw numpy array.  mp.Image wraps the array without
+            # copying it, so no extra memory is used.
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+
+            # ── Compute the timestamp in milliseconds ────────────────
+            #
+            # RunningMode.VIDEO requires a monotonically increasing
+            # timestamp for each frame.  We derive it from the frame
+            # count and the video's FPS.
+            timestamp_ms = int((frame_count - 1) * (1000.0 / fps))
+
+            # ── Run MediaPipe Pose detection ─────────────────────────
+            #
+            # detect_for_video() feeds the frame through the neural
+            # network.  If a person is detected, result.pose_landmarks
+            # will be a list of detected poses (we requested num_poses=1).
+            # Each pose is a list of 33 NormalizedLandmark objects with
+            # .x, .y, .z coordinates in the range [0, 1].
+            result = landmarker.detect_for_video(mp_image, timestamp_ms)
+
+            # ── Extract landmarks & calculate angle ──────────────────
+            if result.pose_landmarks and len(result.pose_landmarks) > 0:
+                # result.pose_landmarks[0] = the first (and only) person.
+                landmarks = result.pose_landmarks[0]
+
+                # MediaPipe landmark indices for the right arm:
+                #   12 = Right Shoulder
+                #   14 = Right Elbow
+                #   16 = Right Wrist
+                #
+                # Each landmark has .x and .y (normalised 0–1 coordinates).
+                # We extract them as simple [x, y] lists to pass into our
+                # calculate_angle() function.
+
+                shoulder = [
+                    landmarks[PoseLandmark.RIGHT_SHOULDER].x,
+                    landmarks[PoseLandmark.RIGHT_SHOULDER].y,
+                ]
+                elbow = [
+                    landmarks[PoseLandmark.RIGHT_ELBOW].x,
+                    landmarks[PoseLandmark.RIGHT_ELBOW].y,
+                ]
+                wrist = [
+                    landmarks[PoseLandmark.RIGHT_WRIST].x,
+                    landmarks[PoseLandmark.RIGHT_WRIST].y,
+                ]
+
+                # Calculate the elbow flexion angle.
+                # shoulder → elbow → wrist  (elbow is the vertex).
+                angle = calculate_angle(shoulder, elbow, wrist)
+
+                # Round to 2 decimal places for clean output.
+                angle = round(angle, 2)
+
+                # Store the angle value (lightweight float — negligible memory).
+                elbow_angles.append(angle)
+
+                # Print to the terminal so you can watch it in real-time
+                # while the server processes the video.
+                angle_data.append(round(angle, 2))
+                frame_count += 1
+            else:
+                # No pose detected in this frame — skip it.
+                print(f"Frame {frame_count}: No pose detected.")
+
+            # ── FREE MEMORY IMMEDIATELY ──────────────────────────────
+            #
+            # This is CRITICAL on an 8 GB machine.  A single 1080p frame
+            # is ~6 MB of raw pixel data.  If we kept every frame, a
+            # 30-second video at 30 fps = 900 frames × 6 MB = 5.4 GB!
+            # By deleting here, peak usage stays at ~12 MB (two frames
+            # worth: the original BGR + the RGB copy).
+            del frame, rgb_frame
+
+    finally:
+        # ── 4d. Release resources ────────────────────────────────────────
+        #
+        # ALWAYS release the VideoCapture and close the PoseLandmarker,
+        # even if an error occurred during processing.  The "finally"
+        # block guarantees this runs no matter what.
+        cap.release()
+        landmarker.close()
+
+    # ══════════════════════════════════════════════════════════════════════
+    # TODO — FUTURE ENHANCEMENTS
+    # ══════════════════════════════════════════════════════════════════════
+    #
+    #   • Send the elbow_angles data to the Gemini API for AI coaching
+    #     feedback  (see google-generativeai in requirements.txt).
+    #
+    #   • Store results in Supabase (PostgreSQL) so the frontend can
+    #     fetch historical data and plot graphs.
+    #
+    #   • Extract additional joints (hip, knee, ankle) for full-body
+    #     bowling-action analysis.
+    # ══════════════════════════════════════════════════════════════════════
+
+    # ── Step 5: Return success response ──────────────────────────────────
+
+    # Return the packaged data
     return {
-        "message": "Video uploaded successfully.",
+        "message": "Video processed successfully.",
         "filename": unique_filename,
-        "size_bytes": total_size,
+        "frames_processed": frame_count,
+        "elbow_angles": angle_data
     }
