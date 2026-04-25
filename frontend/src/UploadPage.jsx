@@ -7,6 +7,8 @@ export default function UploadPage() {
   const [dragOver, setDragOver] = useState(false)
   const [videoFile, setVideoFile] = useState(null)
   const [videoURL, setVideoURL] = useState(null)
+  // NEW: State to track when the backend is crunching the video
+  const [isUploading, setIsUploading] = useState(false)
   const inputRef = useRef(null)
 
   useEffect(() => {
@@ -35,6 +37,36 @@ export default function UploadPage() {
     handleFile(e.target.files[0])
     e.target.value = ''
   }
+
+  // NEW: The engine that talks to Python
+  const handleAnalyze = async () => {
+    if (!videoFile) return;
+
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append("file", videoFile);
+
+    try {
+      // Send the file to FastAPI
+      const response = await fetch("http://127.0.0.1:8000/upload-video/", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (response.ok) {
+        const pythonData = await response.json();
+        // Redirect to the analysis page, but pass the Python math along in the router state!
+        navigate('/analysis', { state: { analysisData: pythonData } });
+      } else {
+        alert("Upload failed. Check the FastAPI terminal for errors.");
+        setIsUploading(false);
+      }
+    } catch (error) {
+      console.error("Error:", error);
+      alert("Network Error: Is the FastAPI server running?");
+      setIsUploading(false);
+    }
+  };
 
   return (
     <div
@@ -69,6 +101,7 @@ export default function UploadPage() {
             gap: '20px',
           }}
         >
+          {/* ... Drag and Drop Zone (Unchanged) ... */}
           <div
             onDragOver={(e) => {
               e.preventDefault()
@@ -161,6 +194,7 @@ export default function UploadPage() {
             </p>
           </div>
 
+          {/* ... Video Preview Zone (Unchanged) ... */}
           <div
             style={{
               border: '1px solid #1e1e1e',
@@ -215,31 +249,41 @@ export default function UploadPage() {
             <button
               type="button"
               aria-label="Analyse uploaded video"
-              onClick={() => navigate('/analysis')}
+              // NEW: Trigger our Python function instead of instantly navigating
+              onClick={handleAnalyze}
+              // Disable the button while uploading so they don't spam it
+              disabled={isUploading}
               style={{
-                backgroundColor: '#22c55e',
+                // Change color if uploading
+                backgroundColor: isUploading ? '#16a34a' : '#22c55e',
                 color: '#000',
                 border: 'none',
                 borderRadius: '8px',
                 padding: '14px 36px',
                 fontSize: '16px',
                 fontWeight: 700,
-                cursor: 'pointer',
+                // Change cursor if uploading
+                cursor: isUploading ? 'wait' : 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '10px',
                 transition: 'background-color 0.2s, transform 0.15s',
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = '#16a34a'
-                e.currentTarget.style.transform = 'scale(1.02)'
+                if (!isUploading) {
+                  e.currentTarget.style.backgroundColor = '#16a34a'
+                  e.currentTarget.style.transform = 'scale(1.02)'
+                }
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = '#22c55e'
-                e.currentTarget.style.transform = 'scale(1)'
+                if (!isUploading) {
+                  e.currentTarget.style.backgroundColor = '#22c55e'
+                  e.currentTarget.style.transform = 'scale(1)'
+                }
               }}
             >
-              Analyse Video →
+              {/* Change the text based on state */}
+              {isUploading ? 'Analyzing...' : 'Analyse Video →'}
             </button>
           </div>
         )}
