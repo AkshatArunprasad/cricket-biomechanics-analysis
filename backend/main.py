@@ -7,7 +7,8 @@
 #
 #     POST /upload-video/   →  Accepts an MP4 file, saves it to disk,
 #                               then runs MediaPipe Pose estimation on
-#                               every frame to extract elbow angles.
+#                               every frame to extract elbow angles,
+#                               body alignment, and head stability.
 #
 # IMPORTANT (8 GB RAM constraint – see vision.md):
 #   We NEVER load an entire video into memory.  Instead we stream incoming
@@ -70,7 +71,12 @@ from fastapi.middleware.cors import CORSMiddleware
 #     The go-to library for fast numerical computation in Python.  We use it
 #     to convert landmark coordinates into arrays and calculate the 2D angle
 #     between three joint positions using trigonometry (arctan2).
+#
+# math
+#     Standard-library maths module.  We use math.atan2 and math.degrees for
+#     the body-alignment (trunk-tilt) calculation.
 
+import math
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -206,6 +212,40 @@ def calculate_angle(a, b, c):
         angle = 360.0 - angle
 
     return angle
+
+
+# =============================================================================
+# Utility: Body-Alignment Angle (Trunk Tilt)
+# =============================================================================
+#
+# Given the Nose and Front Ankle coordinates, calculate the angle of the line
+# connecting the ankle to the nose relative to a perfectly vertical axis.
+# 0° = perfectly upright;  positive values = leaning / falling away.
+#
+# The vertical axis runs straight up from the ankle, so a vertical line has
+# a dx of 0.  We measure how far the nose deviates from that vertical.
+
+def calculate_body_alignment(nose, ankle):
+    """
+    Calculate the angle between the ankle→nose line and the vertical axis.
+
+    Parameters
+    ----------
+    nose  : list  – [x, y] normalised coordinates of the nose.
+    ankle : list  – [x, y] normalised coordinates of the front ankle.
+
+    Returns
+    -------
+    float
+        Angle in degrees (0 = upright, positive = tilted).
+    """
+    dx = nose[0] - ankle[0]
+    dy = ankle[1] - nose[1]   # NOTE: y increases downward in image coords,
+                               # so ankle_y > nose_y when standing upright.
+    if dy == 0:
+        return 90.0  # Completely horizontal — extreme case
+    angle_rad = math.atan2(abs(dx), abs(dy))
+    return round(math.degrees(angle_rad), 2)
 
 
 # =============================================================================
@@ -415,6 +455,20 @@ async def upload_video(file: UploadFile = File(...)):
     elbow_angles = []
     frame_count = 0
 
+    # ── Per-frame landmark coordinates for biomechanical phase detection ──
+    #
+    # We track several coordinates each frame so that AFTER the loop we can
+    # run the two-phase release-frame algorithm:
+    #   Phase 1 – Front Foot Contact (FFC): max ankle Y
+    #   Phase 2 – True Release: min wrist Y in the 30 frames after FFC
+    #
+    # We also keep Nose coords for body-alignment and head-stability.
+    nose_y_per_frame = []       # float – Y-coordinate of Nose per frame
+    nose_coords_per_frame = []  # [x, y] of Nose per frame
+    ankle_coords_per_frame = [] # [x, y] of Left Ankle (27) per frame
+    ankle_y_per_frame = []      # float – Y-coordinate of Left Ankle per frame
+    wrist_y_per_frame = []      # float – Y-coordinate of Right Wrist (16) per frame
+
     # ── 4c. Frame-by-frame processing loop ───────────────────────────────
     #
     # This is the heart of the pipeline.  For EVERY frame in the video:
@@ -509,9 +563,31 @@ async def upload_video(file: UploadFile = File(...)):
                 # Print to the terminal so you can watch it in real-time
                 # while the server processes the video.
                 angle_data.append(round(angle, 2))
+
+                # ── Capture Nose, Ankle, and Wrist coordinates ───────
+                nose = [
+                    landmarks[0].x,   # Landmark 0 = Nose
+                    landmarks[0].y,
+                ]
+                left_ankle = [
+                    landmarks[27].x,  # Landmark 27 = Left Ankle
+                    landmarks[27].y,
+                ]
+                nose_y_per_frame.append(nose[1])
+                nose_coords_per_frame.append(nose)
+                ankle_coords_per_frame.append(left_ankle)
+                ankle_y_per_frame.append(left_ankle[1])
+                wrist_y_per_frame.append(wrist[1])  # wrist already extracted above
+
                 frame_count += 1
             else:
-                # No pose detected in this frame — skip it.
+                # No pose detected in this frame — append None placeholders
+                # so that indices stay aligned with the angle_data list.
+                nose_y_per_frame.append(None)
+                nose_coords_per_frame.append(None)
+                ankle_coords_per_frame.append(None)
+                ankle_y_per_frame.append(None)
+                wrist_y_per_frame.append(None)
                 print(f"Frame {frame_count}: No pose detected.")
 
             # ── FREE MEMORY IMMEDIATELY ──────────────────────────────
@@ -533,6 +609,110 @@ async def upload_video(file: UploadFile = File(...)):
         landmarker.close()
 
     # ══════════════════════════════════════════════════════════════════════
+    # Step 5 — Two-Phase Biomechanical Release Detection
+    # ══════════════════════════════════════════════════════════════════════
+    #
+    # The old approach (max elbow extension = release) is inaccurate.
+    # A real bowling delivery has two distinct biomechanical events:
+    #
+    #   PHASE 1 – Front Foot Contact (FFC)
+    #       The front ankle (Landmark 27) reaches its lowest physical point
+    #       on screen (maximum Y in normalised coords) as the foot plants.
+    #
+    #   PHASE 2 – True Release
+    #       Starting from the FFC frame, the bowling wrist (Landmark 16)
+    #       swings over the top.  Within the next 30 frames, find the
+    #       frame where the wrist Y is at its minimum (highest physical
+    #       point above the head).  THAT is the true release frame.
+    #
+    # All downstream metrics (elbow angle, body alignment, head stability)
+    # are then evaluated at this biomechanically-accurate release frame.
+    # ══════════════════════════════════════════════════════════════════════
+
+    body_alignment_angle = None
+    head_drop_variance = None
+    release_frame_index = None
+    ffc_frame_index = None
+
+    if angle_data:
+        # ── 5a. PHASE 1 — Find Front Foot Contact (FFC) ─────────────────
+        #
+        # The FFC frame is where the front ankle's Y-coordinate is at its
+        # absolute maximum.  In normalised image coordinates (0 = top,
+        # 1 = bottom), the foot planting in the crease corresponds to the
+        # highest Y value.
+
+        # Build a clean array, replacing None with -1 so argmax ignores
+        # frames where the pose wasn't detected.
+        ankle_y_clean = [
+            y if y is not None else -1.0
+            for y in ankle_y_per_frame
+        ]
+
+        if ankle_y_clean:
+            ffc_frame_index = int(np.argmax(ankle_y_clean))
+        else:
+            # Fallback: no ankle data at all — can't detect phases.
+            ffc_frame_index = 0
+
+        # ── 5b. PHASE 2 — Find True Release (wrist peak) ────────────────
+        #
+        # Starting from the FFC frame, look at the next 30 frames.  The
+        # release happens when the bowling wrist reaches its MINIMUM Y
+        # (highest physical point — arm fully extended above the head).
+
+        search_start = ffc_frame_index
+        search_end = min(ffc_frame_index + 30, len(wrist_y_per_frame))
+        wrist_y_window = wrist_y_per_frame[search_start:search_end]
+
+        # Replace None values with 2.0 (well above any normalised coord)
+        # so argmin ignores frames with no detection.
+        wrist_y_safe = [
+            y if y is not None else 2.0
+            for y in wrist_y_window
+        ]
+
+        if wrist_y_safe:
+            # argmin gives us the index WITHIN the window; offset it back
+            # to the global frame index.
+            release_frame_index = search_start + int(np.argmin(wrist_y_safe))
+        else:
+            # Fallback: if the window is empty, use the FFC frame itself.
+            release_frame_index = ffc_frame_index
+
+        # ── 5c. Body Alignment at Release ────────────────────────────────
+        #
+        # At the true release frame, compute the angle of the Ankle→Nose
+        # line relative to the vertical axis.  0° = perfectly upright.
+
+        nose_at_release = nose_coords_per_frame[release_frame_index]
+        ankle_at_release = ankle_coords_per_frame[release_frame_index]
+
+        if nose_at_release is not None and ankle_at_release is not None:
+            body_alignment_angle = calculate_body_alignment(
+                nose_at_release, ankle_at_release
+            )
+
+        # ── 5d. Head Stability (pre-release window) ─────────────────────
+        #
+        # Look at the 15 frames immediately before the release frame and
+        # measure the variance of the Nose's Y-coordinate.  High variance
+        # means the head is bouncing / dropping during the gather.
+
+        window_start = max(0, release_frame_index - 15)
+        window_end = release_frame_index  # exclusive
+
+        nose_y_window = [
+            y for y in nose_y_per_frame[window_start:window_end]
+            if y is not None
+        ]
+
+        if len(nose_y_window) >= 2:
+            head_drop_variance = round(float(np.var(nose_y_window)), 6)
+        else:
+            head_drop_variance = 0.0
+
+    # ══════════════════════════════════════════════════════════════════════
     # TODO — FUTURE ENHANCEMENTS
     # ══════════════════════════════════════════════════════════════════════
     #
@@ -541,17 +721,17 @@ async def upload_video(file: UploadFile = File(...)):
     #
     #   • Store results in Supabase (PostgreSQL) so the frontend can
     #     fetch historical data and plot graphs.
-    #
-    #   • Extract additional joints (hip, knee, ankle) for full-body
-    #     bowling-action analysis.
     # ══════════════════════════════════════════════════════════════════════
 
-    # ── Step 5: Return success response ──────────────────────────────────
+    # ── Step 6: Return success response ──────────────────────────────────
 
-    # Return the packaged data
+    # Return the packaged data — now includes biomechanical metrics
     return {
         "message": "Video processed successfully.",
         "filename": unique_filename,
         "frames_processed": frame_count,
-        "elbow_angles": angle_data
+        "elbow_angles": angle_data,
+        "release_frame": release_frame_index,
+        "body_alignment_angle": body_alignment_angle,
+        "head_drop_variance": head_drop_variance,
     }

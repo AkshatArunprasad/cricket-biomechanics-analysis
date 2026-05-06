@@ -92,6 +92,7 @@ function MetricCard({ icon, label, value, badge, badgeColor }) {
   const badgeStyles = {
     green: { bg: 'rgba(34,197,94,0.12)', border: 'rgba(34,197,94,0.3)', text: '#22c55e' },
     amber: { bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.3)', text: '#f59e0b' },
+    red:   { bg: 'rgba(239,68,68,0.12)',   border: 'rgba(239,68,68,0.3)',  text: '#ef4444' },
   }
   const s = badgeStyles[badgeColor] || badgeStyles.green
 
@@ -130,14 +131,30 @@ function ElbowChart({ currentFrame, chartData }) {
   )
 }
 
-function AICoachFeedback({ releaseAngle }) {
+function AICoachFeedback({ releaseAngle, bodyAlignmentAngle, headDropVariance }) {
   const isChucking = releaseAngle < 165;
+  const isFallingAway = bodyAlignmentAngle !== null && bodyAlignmentAngle > 15;
+  const isHeadUnstable = headDropVariance !== null && headDropVariance > 0.002;
 
   const feedback = [
     {
       color: isChucking ? '#f59e0b' : '#22c55e',
       title: isChucking ? 'Arm bend detected:' : 'High arm action:',
       text: `Your arm angle at release is ${releaseAngle}°. ${isChucking ? 'This indicates a slight throw. Focus on keeping your bowling arm locked brushing past your ear.' : 'Excellent extension. A high release point generates sharper dip and bounce.'}`,
+    },
+    {
+      color: isFallingAway ? '#ef4444' : '#22c55e',
+      title: isFallingAway ? 'Falling away at release:' : 'Aligned body position:',
+      text: isFallingAway
+        ? `Your trunk tilt is ${bodyAlignmentAngle}° at the point of release. You are falling away from the crease, leaking energy sideways instead of driving it toward the batsman. Focus on bowling "through the crease" with your head over your front knee.`
+        : `Your trunk tilt is ${bodyAlignmentAngle ?? 'N/A'}° at release — nice and upright. Your energy is being directed efficiently toward the target.`,
+    },
+    {
+      color: isHeadUnstable ? '#f59e0b' : '#22c55e',
+      title: isHeadUnstable ? 'Head dropping in gather:' : 'Stable head position:',
+      text: isHeadUnstable
+        ? `Your head stability variance is ${headDropVariance?.toFixed(4)}. Your head is moving vertically during the delivery stride. A stable head keeps your eyes level and improves accuracy. Try to "run tall" into the crease.`
+        : `Your head stability variance is ${headDropVariance?.toFixed(4) ?? 'N/A'} — very stable through the gather. This helps keep your eyes level and improves accuracy.`,
     },
     {
       color: '#22c55e',
@@ -182,6 +199,10 @@ export default function AnalysisPage() {
   // MAPPING THE LIVE DATA
   const totalFrames = pythonData.frames_processed;
 
+  // NEW: Extract the biomechanical metrics from the Python response
+  const bodyAlignmentAngle = pythonData.body_alignment_angle;
+  const headDropVariance = pythonData.head_drop_variance;
+
   // Format the raw array into the exact {frame, angle} objects that Recharts wants
   const liveChartData = pythonData.elbow_angles.map((angle, index) => ({
     frame: index,
@@ -206,7 +227,29 @@ export default function AnalysisPage() {
       value: totalFrames,
       badge: 'Live Data',
       badgeColor: 'green',
-    }
+    },
+    {
+      icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><line x1="12" y1="2" x2="12" y2="22" stroke={bodyAlignmentAngle > 15 ? '#ef4444' : '#22c55e'} strokeWidth="2" strokeLinecap="round" /><line x1="12" y1="2" x2="18" y2="8" stroke={bodyAlignmentAngle > 15 ? '#ef4444' : '#22c55e'} strokeWidth="2" strokeLinecap="round" /><circle cx="12" cy="2" r="1.5" fill={bodyAlignmentAngle > 15 ? '#ef4444' : '#22c55e'} /></svg>,
+      label: 'Body Alignment (Trunk Tilt)',
+      value: bodyAlignmentAngle !== null ? `${bodyAlignmentAngle}°` : 'N/A',
+      badge: bodyAlignmentAngle !== null
+        ? (bodyAlignmentAngle <= 15 ? 'Aligned' : 'Falling Away')
+        : 'No Data',
+      badgeColor: bodyAlignmentAngle !== null
+        ? (bodyAlignmentAngle <= 15 ? 'green' : 'red')
+        : 'amber',
+    },
+    {
+      icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="6" r="4" stroke={headDropVariance > 0.002 ? '#f59e0b' : '#22c55e'} strokeWidth="2" /><path d="M12 10v6" stroke={headDropVariance > 0.002 ? '#f59e0b' : '#22c55e'} strokeWidth="2" strokeLinecap="round" /><path d="M8 20h8" stroke={headDropVariance > 0.002 ? '#f59e0b' : '#22c55e'} strokeWidth="2" strokeLinecap="round" /></svg>,
+      label: 'Head Stability (Variance)',
+      value: headDropVariance !== null ? headDropVariance.toFixed(4) : 'N/A',
+      badge: headDropVariance !== null
+        ? (headDropVariance <= 0.002 ? 'Stable' : 'Head Drop Detected')
+        : 'No Data',
+      badgeColor: headDropVariance !== null
+        ? (headDropVariance <= 0.002 ? 'green' : 'amber')
+        : 'amber',
+    },
   ]
 
   return (
@@ -229,7 +272,11 @@ export default function AnalysisPage() {
         </div>
 
         <ElbowChart currentFrame={releaseFrame} chartData={liveChartData} />
-        <AICoachFeedback releaseAngle={maxAngle} />
+        <AICoachFeedback
+          releaseAngle={maxAngle}
+          bodyAlignmentAngle={bodyAlignmentAngle}
+          headDropVariance={headDropVariance}
+        />
       </main>
     </div>
   )
