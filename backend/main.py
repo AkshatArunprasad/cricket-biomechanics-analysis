@@ -27,6 +27,7 @@
 
 import os
 import uuid
+import base64
 
 # ── Third-party imports ──────────────────────────────────────────────────────
 #
@@ -80,6 +81,61 @@ import math
 import cv2
 import mediapipe as mp
 import numpy as np
+
+# ── Pose-skeleton connection map ─────────────────────────────────────────────
+#
+# MediaPipe 0.10.33 removed the legacy `mediapipe.solutions` subpackage,
+# so `mp.solutions.pose.POSE_CONNECTIONS` no longer exists.  We define
+# the 33-landmark connection set ourselves — these are the pairs of
+# landmark indices that should be joined by lines to form a skeleton.
+#
+# Source: https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker
+
+POSE_CONNECTIONS = frozenset([
+    # Face
+    (0, 1), (1, 2), (2, 3), (3, 7),
+    (0, 4), (4, 5), (5, 6), (6, 8),
+    (9, 10),
+    # Torso
+    (11, 12), (11, 23), (12, 24), (23, 24),
+    # Left arm
+    (11, 13), (13, 15), (15, 17), (15, 19), (15, 21), (17, 19),
+    # Right arm
+    (12, 14), (14, 16), (16, 18), (16, 20), (16, 22), (18, 20),
+    # Left leg
+    (23, 25), (25, 27), (27, 29), (27, 31), (29, 31),
+    # Right leg
+    (24, 26), (26, 28), (28, 30), (28, 32), (30, 32),
+])
+
+
+def draw_pose_landmarks(image, landmarks, h, w):
+    """
+    Draw a full-body skeleton on *image* using pure OpenCV.
+
+    Parameters
+    ----------
+    image     : numpy array – BGR image to draw on (modified in-place).
+    landmarks : list        – 33 Tasks-API NormalizedLandmark objects.
+    h, w      : int         – image height and width in pixels.
+    """
+    # Convert normalised landmarks to pixel coordinates once.
+    pts = [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
+
+    # Draw the connection lines (bones)
+    for start_idx, end_idx in POSE_CONNECTIONS:
+        if start_idx < len(pts) and end_idx < len(pts):
+            cv2.line(
+                image, pts[start_idx], pts[end_idx],
+                color=(50, 205, 50),  # lime-green in BGR
+                thickness=2,
+                lineType=cv2.LINE_AA,
+            )
+
+    # Draw the landmark dots (joints)
+    for px, py in pts:
+        cv2.circle(image, (px, py), 4, (0, 0, 255), -1, cv2.LINE_AA)
+        cv2.circle(image, (px, py), 5, (255, 255, 255), 1, cv2.LINE_AA)
 
 
 # =============================================================================
@@ -458,16 +514,18 @@ async def upload_video(file: UploadFile = File(...)):
     # ── Per-frame landmark coordinates for biomechanical phase detection ──
     #
     # We track several coordinates each frame so that AFTER the loop we can
-    # run the two-phase release-frame algorithm:
-    #   Phase 1 – Front Foot Contact (FFC): max ankle Y
-    #   Phase 2 – True Release: min wrist Y in the 30 frames after FFC
+    # run the Vertical Extension Method to detect the true release frame:
+    #   1. Find the "delivery window" — frames where wrist is above nose
+    #   2. Within that window, find max shoulder→wrist Euclidean distance
     #
-    # We also keep Nose coords for body-alignment and head-stability.
-    nose_y_per_frame = []       # float – Y-coordinate of Nose per frame
-    nose_coords_per_frame = []  # [x, y] of Nose per frame
-    ankle_coords_per_frame = [] # [x, y] of Left Ankle (27) per frame
-    ankle_y_per_frame = []      # float – Y-coordinate of Left Ankle per frame
-    wrist_y_per_frame = []      # float – Y-coordinate of Right Wrist (16) per frame
+    # We also keep Nose & Ankle coords for body-alignment and head-stability.
+    nose_y_per_frame = []          # float – Y-coordinate of Nose per frame
+    nose_coords_per_frame = []     # [x, y] of Nose per frame
+    ankle_coords_per_frame = []    # [x, y] of Left Ankle (27) per frame
+    ankle_y_per_frame = []         # float – Y-coordinate of Left Ankle per frame
+    wrist_y_per_frame = []         # float – Y-coordinate of Right Wrist (16) per frame
+    shoulder_coords_per_frame = [] # [x, y] of Right Shoulder (12) per frame
+    wrist_coords_per_frame = []    # [x, y] of Right Wrist (16) per frame
 
     # ── 4c. Frame-by-frame processing loop ───────────────────────────────
     #
@@ -578,6 +636,8 @@ async def upload_video(file: UploadFile = File(...)):
                 ankle_coords_per_frame.append(left_ankle)
                 ankle_y_per_frame.append(left_ankle[1])
                 wrist_y_per_frame.append(wrist[1])  # wrist already extracted above
+                shoulder_coords_per_frame.append(shoulder)
+                wrist_coords_per_frame.append(wrist)
 
                 frame_count += 1
             else:
@@ -588,6 +648,8 @@ async def upload_video(file: UploadFile = File(...)):
                 ankle_coords_per_frame.append(None)
                 ankle_y_per_frame.append(None)
                 wrist_y_per_frame.append(None)
+                shoulder_coords_per_frame.append(None)
+                wrist_coords_per_frame.append(None)
                 print(f"Frame {frame_count}: No pose detected.")
 
             # ── FREE MEMORY IMMEDIATELY ──────────────────────────────
@@ -609,78 +671,97 @@ async def upload_video(file: UploadFile = File(...)):
         landmarker.close()
 
     # ══════════════════════════════════════════════════════════════════════
-    # Step 5 — Two-Phase Biomechanical Release Detection
+    # Step 5 — Vertical Extension Method (Release Frame Detection)
     # ══════════════════════════════════════════════════════════════════════
     #
-    # The old approach (max elbow extension = release) is inaccurate.
-    # A real bowling delivery has two distinct biomechanical events:
+    # The previous "Front Foot Contact" approach failed because camera
+    # perspective makes foot/ankle tracking unreliable.  The new method
+    # uses the bowling ARM geometry, which is clearly visible from any
+    # common broadcast or smartphone angle:
     #
-    #   PHASE 1 – Front Foot Contact (FFC)
-    #       The front ankle (Landmark 27) reaches its lowest physical point
-    #       on screen (maximum Y in normalised coords) as the foot plants.
+    #   1. DELIVERY WINDOW — Find all frames where the Right Wrist
+    #      (Landmark 16) is physically ABOVE the Nose (Landmark 0).
+    #      In normalised image coordinates (0 = top, 1 = bottom),
+    #      "above" means  wrist_y < nose_y.
     #
-    #   PHASE 2 – True Release
-    #       Starting from the FFC frame, the bowling wrist (Landmark 16)
-    #       swings over the top.  Within the next 30 frames, find the
-    #       frame where the wrist Y is at its minimum (highest physical
-    #       point above the head).  THAT is the true release frame.
+    #   2. MAX EXTENSION — Within that delivery window, calculate the
+    #      Euclidean distance between the Right Shoulder (Landmark 12)
+    #      and the Right Wrist (Landmark 16).  The release frame is the
+    #      one with the MAXIMUM distance — full arm extension at the
+    #      peak of the delivery arc.
     #
-    # All downstream metrics (elbow angle, body alignment, head stability)
-    # are then evaluated at this biomechanically-accurate release frame.
+    #   3. FALLBACK — If no frames satisfy the delivery-window filter
+    #      (e.g. poor detection), fall back to the frame with the
+    #      absolute minimum wrist Y (highest point on screen).
+    #
+    # All downstream metrics (elbow angle, body alignment, head
+    # stability) are recalculated at this release frame.
     # ══════════════════════════════════════════════════════════════════════
 
     body_alignment_angle = None
     head_drop_variance = None
     release_frame_index = None
-    ffc_frame_index = None
+    release_elbow_angle = None
 
     if angle_data:
-        # ── 5a. PHASE 1 — Find Front Foot Contact (FFC) ─────────────────
+        # ── 5a. Build the Delivery Window ────────────────────────────────
         #
-        # The FFC frame is where the front ankle's Y-coordinate is at its
-        # absolute maximum.  In normalised image coordinates (0 = top,
-        # 1 = bottom), the foot planting in the crease corresponds to the
-        # highest Y value.
+        # Collect indices of frames where the wrist is above the nose.
+        # Both values must be non-None for the comparison to be valid.
 
-        # Build a clean array, replacing None with -1 so argmax ignores
-        # frames where the pose wasn't detected.
-        ankle_y_clean = [
-            y if y is not None else -1.0
-            for y in ankle_y_per_frame
-        ]
+        delivery_window = []
+        for i in range(len(wrist_y_per_frame)):
+            wy = wrist_y_per_frame[i]
+            ny = nose_y_per_frame[i]
+            if wy is not None and ny is not None and wy < ny:
+                delivery_window.append(i)
 
-        if ankle_y_clean:
-            ffc_frame_index = int(np.argmax(ankle_y_clean))
-        else:
-            # Fallback: no ankle data at all — can't detect phases.
-            ffc_frame_index = 0
-
-        # ── 5b. PHASE 2 — Find True Release (wrist peak) ────────────────
+        # ── 5b. Find Max Shoulder→Wrist Extension ────────────────────────
         #
-        # Starting from the FFC frame, look at the next 30 frames.  The
-        # release happens when the bowling wrist reaches its MINIMUM Y
-        # (highest physical point — arm fully extended above the head).
+        # Within the delivery window, compute the Euclidean distance
+        # between shoulder and wrist for each candidate frame and pick
+        # the one with the greatest distance (fullest arm extension).
 
-        search_start = ffc_frame_index
-        search_end = min(ffc_frame_index + 30, len(wrist_y_per_frame))
-        wrist_y_window = wrist_y_per_frame[search_start:search_end]
+        if delivery_window:
+            best_dist = -1.0
+            best_frame = delivery_window[0]
 
-        # Replace None values with 2.0 (well above any normalised coord)
-        # so argmin ignores frames with no detection.
-        wrist_y_safe = [
-            y if y is not None else 2.0
-            for y in wrist_y_window
-        ]
+            for idx in delivery_window:
+                s = shoulder_coords_per_frame[idx]
+                wr = wrist_coords_per_frame[idx]
+                if s is not None and wr is not None:
+                    dist = math.sqrt(
+                        (wr[0] - s[0]) ** 2 + (wr[1] - s[1]) ** 2
+                    )
+                    if dist > best_dist:
+                        best_dist = dist
+                        best_frame = idx
 
-        if wrist_y_safe:
-            # argmin gives us the index WITHIN the window; offset it back
-            # to the global frame index.
-            release_frame_index = search_start + int(np.argmin(wrist_y_safe))
+            release_frame_index = best_frame
         else:
-            # Fallback: if the window is empty, use the FFC frame itself.
-            release_frame_index = ffc_frame_index
+            # ── 5b-fallback: absolute min wrist Y ────────────────────────
+            #
+            # If the delivery window is empty (poor detection, unusual
+            # angle), fall back to the frame where the wrist reaches its
+            # highest physical point (lowest Y value).
+            wrist_y_safe = [
+                y if y is not None else 2.0
+                for y in wrist_y_per_frame
+            ]
+            if wrist_y_safe:
+                release_frame_index = int(np.argmin(wrist_y_safe))
+            else:
+                release_frame_index = 0
 
-        # ── 5c. Body Alignment at Release ────────────────────────────────
+        # ── 5c. Recalculate Elbow Angle at Release ───────────────────────
+        #
+        # Use the angle_data entry at the release frame index.  The
+        # angle_data list is aligned with the per-frame coordinate lists.
+
+        if release_frame_index < len(angle_data):
+            release_elbow_angle = angle_data[release_frame_index]
+
+        # ── 5d. Body Alignment at Release ────────────────────────────────
         #
         # At the true release frame, compute the angle of the Ankle→Nose
         # line relative to the vertical axis.  0° = perfectly upright.
@@ -693,7 +774,7 @@ async def upload_video(file: UploadFile = File(...)):
                 nose_at_release, ankle_at_release
             )
 
-        # ── 5d. Head Stability (pre-release window) ─────────────────────
+        # ── 5e. Head Stability (pre-release window) ─────────────────────
         #
         # Look at the 15 frames immediately before the release frame and
         # measure the variance of the Nose's Y-coordinate.  High variance
@@ -713,6 +794,145 @@ async def upload_video(file: UploadFile = File(...)):
             head_drop_variance = 0.0
 
     # ══════════════════════════════════════════════════════════════════════
+    # Step 6 — Generate Annotated Release Frame (Skeleton Overlay)
+    # ══════════════════════════════════════════════════════════════════════
+    #
+    # Re-open the video, seek to the exact release frame, run pose
+    # detection in IMAGE mode, and draw:
+    #   1. The full MediaPipe 33-landmark skeleton
+    #   2. A cyan line for Trunk Tilt (Ankle → Nose)
+    #   3. A yellow poly-line for Elbow Angle (Shoulder → Elbow → Wrist)
+    #
+    # The annotated frame is then JPEG-encoded and returned as a Base64
+    # string.  This avoids any canvas-sync issues on the frontend — the
+    # browser simply renders an <img> tag.
+    # ══════════════════════════════════════════════════════════════════════
+
+    annotated_release_frame_b64 = None
+
+    if release_frame_index is not None:
+        # Re-open the video just to grab ONE frame
+        cap2 = cv2.VideoCapture(file_path)
+        if cap2.isOpened():
+            # Seek directly to the release frame
+            cap2.set(cv2.CAP_PROP_POS_FRAMES, release_frame_index)
+            grabbed, release_bgr = cap2.read()
+            cap2.release()
+
+            if grabbed and release_bgr is not None:
+                # ── Run pose detection on this single frame (IMAGE mode) ─
+                image_options = PoseLandmarkerOptions(
+                    base_options=BaseOptions(model_asset_path=MODEL_PATH),
+                    running_mode=RunningMode.IMAGE,
+                    num_poses=1,
+                    min_pose_detection_confidence=0.5,
+                    min_pose_presence_confidence=0.5,
+                    min_tracking_confidence=0.5,
+                )
+                image_landmarker = PoseLandmarker.create_from_options(image_options)
+
+                release_rgb = cv2.cvtColor(release_bgr, cv2.COLOR_BGR2RGB)
+                mp_img = mp.Image(
+                    image_format=mp.ImageFormat.SRGB, data=release_rgb
+                )
+                detection = image_landmarker.detect(mp_img)
+                image_landmarker.close()
+
+                if detection.pose_landmarks and len(detection.pose_landmarks) > 0:
+                    landmarks = detection.pose_landmarks[0]
+                    h, w, _ = release_bgr.shape
+
+                    # ── 6a. Draw the full skeleton using pure OpenCV ─────
+                    #
+                    # We use our own draw_pose_landmarks() helper which
+                    # draws bones (green lines) and joints (red dots)
+                    # directly with cv2 — no legacy mediapipe.solutions
+                    # dependency required.
+                    draw_pose_landmarks(release_bgr, landmarks, h, w)
+
+                    # ── 6b. Draw Trunk Tilt line (Ankle → Nose) ──────────
+                    #
+                    # Cyan line showing the body-alignment axis.
+                    nose_px = (
+                        int(landmarks[0].x * w),
+                        int(landmarks[0].y * h),
+                    )
+                    ankle_px = (
+                        int(landmarks[27].x * w),
+                        int(landmarks[27].y * h),
+                    )
+                    cv2.line(
+                        release_bgr, ankle_px, nose_px,
+                        color=(255, 255, 0),   # Cyan in BGR
+                        thickness=3,
+                        lineType=cv2.LINE_AA,
+                    )
+                    # Small label
+                    cv2.putText(
+                        release_bgr, "Trunk Tilt",
+                        (ankle_px[0] + 8, ankle_px[1] - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                        (255, 255, 0), 2, cv2.LINE_AA,
+                    )
+
+                    # ── 6c. Draw Elbow Angle lines (Shoulder→Elbow→Wrist)
+                    #
+                    # Yellow poly-line highlighting the bowling arm.
+                    shoulder_px = (
+                        int(landmarks[PoseLandmark.RIGHT_SHOULDER].x * w),
+                        int(landmarks[PoseLandmark.RIGHT_SHOULDER].y * h),
+                    )
+                    elbow_px = (
+                        int(landmarks[PoseLandmark.RIGHT_ELBOW].x * w),
+                        int(landmarks[PoseLandmark.RIGHT_ELBOW].y * h),
+                    )
+                    wrist_px = (
+                        int(landmarks[PoseLandmark.RIGHT_WRIST].x * w),
+                        int(landmarks[PoseLandmark.RIGHT_WRIST].y * h),
+                    )
+
+                    cv2.line(
+                        release_bgr, shoulder_px, elbow_px,
+                        color=(0, 255, 255),   # Yellow in BGR
+                        thickness=3,
+                        lineType=cv2.LINE_AA,
+                    )
+                    cv2.line(
+                        release_bgr, elbow_px, wrist_px,
+                        color=(0, 255, 255),
+                        thickness=3,
+                        lineType=cv2.LINE_AA,
+                    )
+                    # Angle label at the elbow joint
+                    elbow_angle_val = calculate_angle(
+                        [landmarks[PoseLandmark.RIGHT_SHOULDER].x,
+                         landmarks[PoseLandmark.RIGHT_SHOULDER].y],
+                        [landmarks[PoseLandmark.RIGHT_ELBOW].x,
+                         landmarks[PoseLandmark.RIGHT_ELBOW].y],
+                        [landmarks[PoseLandmark.RIGHT_WRIST].x,
+                         landmarks[PoseLandmark.RIGHT_WRIST].y],
+                    )
+                    cv2.putText(
+                        release_bgr,
+                        f"{round(elbow_angle_val)}\xb0",
+                        (elbow_px[0] + 10, elbow_px[1] - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                        (0, 255, 255), 2, cv2.LINE_AA,
+                    )
+
+                # ── 6d. Encode the annotated frame as Base64 JPEG ────────
+                success_enc, buffer = cv2.imencode(
+                    ".jpg", release_bgr, [cv2.IMWRITE_JPEG_QUALITY, 90]
+                )
+                if success_enc:
+                    annotated_release_frame_b64 = base64.b64encode(
+                        buffer.tobytes()
+                    ).decode("utf-8")
+
+                # Free the frame memory
+                del release_bgr, release_rgb
+
+    # ══════════════════════════════════════════════════════════════════════
     # TODO — FUTURE ENHANCEMENTS
     # ══════════════════════════════════════════════════════════════════════
     #
@@ -723,15 +943,18 @@ async def upload_video(file: UploadFile = File(...)):
     #     fetch historical data and plot graphs.
     # ══════════════════════════════════════════════════════════════════════
 
-    # ── Step 6: Return success response ──────────────────────────────────
+    # ── Step 7: Return success response ──────────────────────────────────
 
     # Return the packaged data — now includes biomechanical metrics
+    # and the annotated release frame image.
     return {
         "message": "Video processed successfully.",
         "filename": unique_filename,
         "frames_processed": frame_count,
         "elbow_angles": angle_data,
         "release_frame": release_frame_index,
+        "release_elbow_angle": release_elbow_angle,
         "body_alignment_angle": body_alignment_angle,
         "head_drop_variance": head_drop_variance,
+        "annotated_release_frame": annotated_release_frame_b64,
     }

@@ -12,7 +12,7 @@ import {
 } from 'recharts'
 import { SiteNavbar } from './SiteNavbar.jsx'
 
-function VideoPanel({ currentFrame, totalFrames }) {
+function VideoPanel({ currentFrame, totalFrames, annotatedFrame }) {
   const [playing, setPlaying] = useState(false)
 
   return (
@@ -29,19 +29,79 @@ function VideoPanel({ currentFrame, totalFrames }) {
           alignItems: 'center',
           justifyContent: 'center',
           gap: '12px',
+          overflow: 'hidden',
+          position: 'relative',
         }}
       >
-        <svg width="52" height="52" viewBox="0 0 24 24" fill="none" aria-hidden>
-          <polygon
-            points="5 3 19 12 5 21 5 3"
-            stroke="#555"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-        <p style={{ color: '#888', fontSize: '15px', fontWeight: 500 }}>Uploaded Video Playback</p>
-        <p style={{ color: '#555', fontSize: '13px' }}>Frame-by-frame analysis overlay</p>
+        {annotatedFrame ? (
+          <>
+            {/* Annotated Release Frame from Python */}
+            <img
+              src={`data:image/jpeg;base64,${annotatedFrame}`}
+              alt="Analyzed Release Point with skeleton overlay"
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                borderRadius: '14px 14px 0 0',
+                display: 'block',
+              }}
+            />
+            {/* Floating label */}
+            <div
+              style={{
+                position: 'absolute',
+                top: '12px',
+                left: '12px',
+                backgroundColor: 'rgba(34, 197, 94, 0.15)',
+                backdropFilter: 'blur(10px)',
+                border: '1px solid rgba(34, 197, 94, 0.3)',
+                borderRadius: '8px',
+                padding: '6px 14px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+              }}
+            >
+              <div
+                style={{
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  backgroundColor: '#22c55e',
+                  boxShadow: '0 0 8px rgba(34, 197, 94, 0.6)',
+                  animation: 'pulse 2s ease-in-out infinite',
+                }}
+              />
+              <span
+                style={{
+                  color: '#22c55e',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  letterSpacing: '0.5px',
+                  textTransform: 'uppercase',
+                }}
+              >
+                Analyzed Release Point
+              </span>
+            </div>
+          </>
+        ) : (
+          /* Fallback: original placeholder when no annotated frame is available */
+          <>
+            <svg width="52" height="52" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <polygon
+                points="5 3 19 12 5 21 5 3"
+                stroke="#555"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <p style={{ color: '#888', fontSize: '15px', fontWeight: 500 }}>Uploaded Video Playback</p>
+            <p style={{ color: '#555', fontSize: '13px' }}>Frame-by-frame analysis overlay</p>
+          </>
+        )}
       </div>
 
       <div
@@ -84,6 +144,14 @@ function VideoPanel({ currentFrame, totalFrames }) {
           Frame: {currentFrame}/{totalFrames}
         </div>
       </div>
+
+      {/* Pulse animation for the status indicator */}
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+      `}</style>
     </div>
   )
 }
@@ -263,7 +331,7 @@ export default function AnalysisPage() {
         </p>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', gap: '20px', marginBottom: '32px', alignItems: 'start' }}>
-          <VideoPanel currentFrame={releaseFrame} totalFrames={totalFrames} />
+          <VideoPanel currentFrame={releaseFrame} totalFrames={totalFrames} annotatedFrame={pythonData.annotated_release_frame} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '100%' }}>
             {metrics.map((m) => (
               <MetricCard key={m.label} {...m} />
