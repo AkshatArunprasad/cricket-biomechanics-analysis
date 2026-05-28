@@ -277,17 +277,20 @@ export default function AnalysisPage() {
     angle: Math.round(angle)
   }));
 
-  // Find the absolute highest angle to calculate the point of release
-  const maxAngle = Math.max(...liveChartData.map(d => d.angle));
-  const releaseFrame = liveChartData.findIndex(d => d.angle === maxAngle);
+  // Extract the release frame and elbow angle directly from the backend.
+  // The Python Vertical Extension Method has already computed these accurately.
+  const releaseFrame = pythonData.release_frame_index ?? 0;
+  const releaseAngle = pythonData.release_elbow_angle != null
+    ? Math.round(pythonData.release_elbow_angle)
+    : null;
 
   const metrics = [
     {
       icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>,
       label: 'Elbow Angle at Release',
-      value: `${maxAngle}°`,
-      badge: maxAngle >= 165 ? 'Legal Delivery' : 'Flexion Warning',
-      badgeColor: maxAngle >= 165 ? 'green' : 'amber',
+      value: releaseAngle != null ? `${releaseAngle}°` : 'N/A',
+      badge: releaseAngle != null ? (releaseAngle >= 165 ? 'Legal Delivery' : 'Flexion Warning') : 'No Data',
+      badgeColor: releaseAngle != null ? (releaseAngle >= 165 ? 'green' : 'amber') : 'amber',
     },
     {
       icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>,
@@ -341,7 +344,7 @@ export default function AnalysisPage() {
 
         <ElbowChart currentFrame={releaseFrame} chartData={liveChartData} />
         <AICoachFeedback
-          releaseAngle={maxAngle}
+          releaseAngle={releaseAngle}
           bodyAlignmentAngle={bodyAlignmentAngle}
           headDropVariance={headDropVariance}
         />

@@ -639,10 +639,10 @@ async def upload_video(file: UploadFile = File(...)):
                 shoulder_coords_per_frame.append(shoulder)
                 wrist_coords_per_frame.append(wrist)
 
-                frame_count += 1
             else:
                 # No pose detected in this frame — append None placeholders
-                # so that indices stay aligned with the angle_data list.
+                # so that indices stay aligned with the coordinate lists.
+                angle_data.append(None)
                 nose_y_per_frame.append(None)
                 nose_coords_per_frame.append(None)
                 ankle_coords_per_frame.append(None)
@@ -758,7 +758,7 @@ async def upload_video(file: UploadFile = File(...)):
         # Use the angle_data entry at the release frame index.  The
         # angle_data list is aligned with the per-frame coordinate lists.
 
-        if release_frame_index < len(angle_data):
+        if release_frame_index < len(angle_data) and angle_data[release_frame_index] is not None:
             release_elbow_angle = angle_data[release_frame_index]
 
         # ── 5d. Body Alignment at Release ────────────────────────────────
@@ -914,7 +914,7 @@ async def upload_video(file: UploadFile = File(...)):
                     )
                     cv2.putText(
                         release_bgr,
-                        f"{round(elbow_angle_val)}\xb0",
+                        f"{round(elbow_angle_val)} deg",
                         (elbow_px[0] + 10, elbow_px[1] - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                         (0, 255, 255), 2, cv2.LINE_AA,
@@ -951,8 +951,8 @@ async def upload_video(file: UploadFile = File(...)):
         "message": "Video processed successfully.",
         "filename": unique_filename,
         "frames_processed": frame_count,
-        "elbow_angles": angle_data,
-        "release_frame": release_frame_index,
+        "elbow_angles": [a for a in angle_data if a is not None],
+        "release_frame_index": release_frame_index,
         "release_elbow_angle": release_elbow_angle,
         "body_alignment_angle": body_alignment_angle,
         "head_drop_variance": head_drop_variance,
