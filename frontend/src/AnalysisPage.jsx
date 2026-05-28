@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom' // NEW: Added router hooks
 import {
   CartesianGrid,
   Line,
@@ -11,9 +12,8 @@ import {
 } from 'recharts'
 import { SiteNavbar } from './SiteNavbar.jsx'
 
-function VideoPanel({ currentFrame }) {
+function VideoPanel({ currentFrame, totalFrames, annotatedFrame }) {
   const [playing, setPlaying] = useState(false)
-  const totalFrames = 60
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -29,19 +29,79 @@ function VideoPanel({ currentFrame }) {
           alignItems: 'center',
           justifyContent: 'center',
           gap: '12px',
+          overflow: 'hidden',
+          position: 'relative',
         }}
       >
-        <svg width="52" height="52" viewBox="0 0 24 24" fill="none" aria-hidden>
-          <polygon
-            points="5 3 19 12 5 21 5 3"
-            stroke="#555"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-        <p style={{ color: '#888', fontSize: '15px', fontWeight: 500 }}>Uploaded Video Playback</p>
-        <p style={{ color: '#555', fontSize: '13px' }}>Frame-by-frame analysis overlay</p>
+        {annotatedFrame ? (
+          <>
+            {/* Annotated Release Frame from Python */}
+            <img
+              src={`data:image/jpeg;base64,${annotatedFrame}`}
+              alt="Analyzed Release Point with skeleton overlay"
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                borderRadius: '14px 14px 0 0',
+                display: 'block',
+              }}
+            />
+            {/* Floating label */}
+            <div
+              style={{
+                position: 'absolute',
+                top: '12px',
+                left: '12px',
+                backgroundColor: 'rgba(34, 197, 94, 0.15)',
+                backdropFilter: 'blur(10px)',
+                border: '1px solid rgba(34, 197, 94, 0.3)',
+                borderRadius: '8px',
+                padding: '6px 14px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+              }}
+            >
+              <div
+                style={{
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  backgroundColor: '#22c55e',
+                  boxShadow: '0 0 8px rgba(34, 197, 94, 0.6)',
+                  animation: 'pulse 2s ease-in-out infinite',
+                }}
+              />
+              <span
+                style={{
+                  color: '#22c55e',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  letterSpacing: '0.5px',
+                  textTransform: 'uppercase',
+                }}
+              >
+                Analyzed Release Point
+              </span>
+            </div>
+          </>
+        ) : (
+          /* Fallback: original placeholder when no annotated frame is available */
+          <>
+            <svg width="52" height="52" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <polygon
+                points="5 3 19 12 5 21 5 3"
+                stroke="#555"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <p style={{ color: '#888', fontSize: '15px', fontWeight: 500 }}>Uploaded Video Playback</p>
+            <p style={{ color: '#555', fontSize: '13px' }}>Frame-by-frame analysis overlay</p>
+          </>
+        )}
       </div>
 
       <div
@@ -73,39 +133,25 @@ function VideoPanel({ currentFrame }) {
             cursor: 'pointer',
             transition: 'background-color 0.2s, transform 0.15s',
           }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.backgroundColor = '#16a34a'
-            e.currentTarget.style.transform = 'scale(1.03)'
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.backgroundColor = '#22c55e'
-            e.currentTarget.style.transform = 'scale(1)'
-          }}
         >
           {playing ? '⏸ Pause' : '▶ Play Analysis'}
         </button>
 
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            color: '#666',
-            fontSize: '13px',
-          }}
-        >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#666', fontSize: '13px' }}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <polyline
-              points="22 12 18 12 15 21 9 3 6 12 2 12"
-              stroke="#666"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" stroke="#666" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
           Frame: {currentFrame}/{totalFrames}
         </div>
       </div>
+
+      {/* Pulse animation for the status indicator */}
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+      `}</style>
     </div>
   )
 }
@@ -114,219 +160,84 @@ function MetricCard({ icon, label, value, badge, badgeColor }) {
   const badgeStyles = {
     green: { bg: 'rgba(34,197,94,0.12)', border: 'rgba(34,197,94,0.3)', text: '#22c55e' },
     amber: { bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.3)', text: '#f59e0b' },
+    red:   { bg: 'rgba(239,68,68,0.12)',   border: 'rgba(239,68,68,0.3)',  text: '#ef4444' },
   }
   const s = badgeStyles[badgeColor] || badgeStyles.green
 
   return (
-    <div
-      style={{
-        backgroundColor: '#111',
-        border: '1px solid #1e1e1e',
-        borderRadius: '14px',
-        padding: '24px',
-      }}
-    >
-      <div
-        style={{
-          width: '44px',
-          height: '44px',
-          borderRadius: '10px',
-          backgroundColor: '#1a1a1a',
-          border: '1px solid #2a2a2a',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          marginBottom: '16px',
-        }}
-      >
+    <div style={{ backgroundColor: '#111', border: '1px solid #1e1e1e', borderRadius: '14px', padding: '24px' }}>
+      <div style={{ width: '44px', height: '44px', borderRadius: '10px', backgroundColor: '#1a1a1a', border: '1px solid #2a2a2a', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '16px' }}>
         {icon}
       </div>
       <p style={{ color: '#777', fontSize: '13px', marginBottom: '6px' }}>{label}</p>
       <p style={{ fontSize: '28px', fontWeight: 800, marginBottom: '14px' }}>{value}</p>
-      <div
-        style={{
-          backgroundColor: s.bg,
-          border: `1px solid ${s.border}`,
-          borderRadius: '8px',
-          padding: '8px 14px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-        }}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-          <circle cx="12" cy="12" r="10" stroke={s.text} strokeWidth="2" />
-          <line x1="12" y1="8" x2="12" y2="12" stroke={s.text} strokeWidth="2" strokeLinecap="round" />
-          <line x1="12" y1="16" x2="12.01" y2="16" stroke={s.text} strokeWidth="2" strokeLinecap="round" />
-        </svg>
+      <div style={{ backgroundColor: s.bg, border: `1px solid ${s.border}`, borderRadius: '8px', padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
         <span style={{ color: s.text, fontSize: '13px', fontWeight: 500 }}>{badge}</span>
       </div>
     </div>
   )
 }
 
-const elbowData = [
-  { frame: 0, angle: 150 },
-  { frame: 5, angle: 145 },
-  { frame: 10, angle: 138 },
-  { frame: 15, angle: 133 },
-  { frame: 20, angle: 129 },
-  { frame: 25, angle: 124 },
-  { frame: 30, angle: 122 },
-  { frame: 35, angle: 120 },
-  { frame: 40, angle: 118 },
-  { frame: 45, angle: 117 },
-  { frame: 50, angle: 119 },
-  { frame: 55, angle: 126 },
-  { frame: 60, angle: 135 },
-]
-
-function ElbowChart({ currentFrame }) {
+// NEW: Accepts dynamic chartData as a prop
+function ElbowChart({ currentFrame, chartData }) {
   return (
-    <div
-      style={{
-        backgroundColor: '#111',
-        border: '1px solid #1e1e1e',
-        borderRadius: '16px',
-        padding: '28px 28px 20px',
-        marginBottom: '24px',
-      }}
-    >
+    <div style={{ backgroundColor: '#111', border: '1px solid #1e1e1e', borderRadius: '16px', padding: '28px 28px 20px', marginBottom: '24px' }}>
       <h3 style={{ fontSize: '17px', fontWeight: 700, marginBottom: '4px' }}>Elbow Angle Over Time</h3>
-      <p style={{ color: '#666', fontSize: '13px', marginBottom: '24px' }}>
-        Frame-by-frame elbow extension analysis
-      </p>
+      <p style={{ color: '#666', fontSize: '13px', marginBottom: '24px' }}>Frame-by-frame elbow extension analysis</p>
 
       <ResponsiveContainer width="100%" height={280}>
-        <LineChart data={elbowData} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
+        <LineChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" />
-          <XAxis
-            dataKey="frame"
-            label={{
-              value: 'Frame',
-              position: 'insideBottom',
-              offset: -10,
-              fill: '#666',
-              fontSize: 12,
-            }}
-            tick={{ fill: '#666', fontSize: 12 }}
-            axisLine={false}
-            tickLine={false}
-          />
-          <YAxis
-            domain={[0, 160]}
-            ticks={[0, 40, 80, 120, 160]}
-            label={{
-              value: 'Angle (degrees)',
-              angle: -90,
-              position: 'insideLeft',
-              offset: 10,
-              fill: '#666',
-              fontSize: 12,
-            }}
-            tick={{ fill: '#666', fontSize: 12 }}
-            axisLine={false}
-            tickLine={false}
-          />
-          <Tooltip
-            contentStyle={{
-              backgroundColor: '#1a1a1a',
-              border: '1px solid #2e2e2e',
-              borderRadius: '8px',
-              color: '#fff',
-            }}
-            formatter={(v) => [`${v}°`, 'Elbow Angle']}
-            labelFormatter={(l) => `Frame ${l}`}
-          />
+          <XAxis dataKey="frame" tick={{ fill: '#666', fontSize: 12 }} axisLine={false} tickLine={false} />
+          <YAxis domain={[0, 180]} ticks={[0, 45, 90, 135, 180]} tick={{ fill: '#666', fontSize: 12 }} axisLine={false} tickLine={false} />
+          <Tooltip contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid #2e2e2e', borderRadius: '8px', color: '#fff' }} formatter={(v) => [`${v}°`, 'Elbow Angle']} />
           <ReferenceLine x={currentFrame} stroke="#22c55e" strokeDasharray="4 3" strokeWidth={1.5} />
-          <Line
-            type="monotone"
-            dataKey="angle"
-            stroke="#22c55e"
-            strokeWidth={2.5}
-            dot={{ r: 4, fill: '#22c55e', stroke: '#22c55e' }}
-            activeDot={{ r: 7 }}
-          />
+          <Line type="monotone" dataKey="angle" stroke="#22c55e" strokeWidth={2.5} dot={false} activeDot={{ r: 7 }} />
         </LineChart>
       </ResponsiveContainer>
     </div>
   )
 }
 
-const feedback = [
-  {
-    color: '#22c55e',
-    title: 'Strong elbow extension:',
-    text: 'Your elbow angle at release (118°) is within the optimal range for fast bowling. This indicates good arm mechanics.',
-  },
-  {
-    color: '#22c55e',
-    title: 'Above-average arm speed:',
-    text: 'Your arm speed of 87 km/h suggests good power generation through the bowling action.',
-  },
-  {
-    color: '#f59e0b',
-    title: 'Head stability improvement:',
-    text: 'Your head drops slightly at the point of release. Try to keep your head level and eyes focused on the target throughout the delivery stride.',
-  },
-]
+function AICoachFeedback({ releaseAngle, bodyAlignmentAngle, headDropVariance }) {
+  const isChucking = releaseAngle < 165;
+  const isFallingAway = bodyAlignmentAngle !== null && bodyAlignmentAngle > 15;
+  const isHeadUnstable = headDropVariance !== null && headDropVariance > 0.002;
 
-function AICoachFeedback() {
+  const feedback = [
+    {
+      color: isChucking ? '#f59e0b' : '#22c55e',
+      title: isChucking ? 'Arm bend detected:' : 'High arm action:',
+      text: `Your arm angle at release is ${releaseAngle}°. ${isChucking ? 'This indicates a slight throw. Focus on keeping your bowling arm locked brushing past your ear.' : 'Excellent extension. A high release point generates sharper dip and bounce.'}`,
+    },
+    {
+      color: isFallingAway ? '#ef4444' : '#22c55e',
+      title: isFallingAway ? 'Falling away at release:' : 'Aligned body position:',
+      text: isFallingAway
+        ? `Your trunk tilt is ${bodyAlignmentAngle}° at the point of release. You are falling away from the crease, leaking energy sideways instead of driving it toward the batsman. Focus on bowling "through the crease" with your head over your front knee.`
+        : `Your trunk tilt is ${bodyAlignmentAngle ?? 'N/A'}° at release — nice and upright. Your energy is being directed efficiently toward the target.`,
+    },
+    {
+      color: isHeadUnstable ? '#f59e0b' : '#22c55e',
+      title: isHeadUnstable ? 'Head dropping in gather:' : 'Stable head position:',
+      text: isHeadUnstable
+        ? `Your head stability variance is ${headDropVariance?.toFixed(4)}. Your head is moving vertically during the delivery stride. A stable head keeps your eyes level and improves accuracy. Try to "run tall" into the crease.`
+        : `Your head stability variance is ${headDropVariance?.toFixed(4) ?? 'N/A'} — very stable through the gather. This helps keep your eyes level and improves accuracy.`,
+    },
+    {
+      color: '#22c55e',
+      title: 'Body drive:',
+      text: 'Ensure you are pivoting powerfully over a braced front leg to maximize revs on the ball.',
+    }
+  ]
+
   return (
-    <div
-      style={{
-        backgroundColor: 'rgba(34,197,94,0.04)',
-        border: '1px solid rgba(34,197,94,0.15)',
-        borderRadius: '16px',
-        padding: '28px 32px',
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '22px' }}>
-        <div
-          style={{
-            width: '40px',
-            height: '40px',
-            borderRadius: '10px',
-            backgroundColor: 'rgba(34,197,94,0.15)',
-            border: '1px solid rgba(34,197,94,0.3)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <polyline
-              points="23 6 13.5 15.5 8.5 10.5 1 18"
-              stroke="#22c55e"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <polyline
-              points="17 6 23 6 23 12"
-              stroke="#22c55e"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </div>
-        <h3 style={{ fontSize: '18px', fontWeight: 700 }}>AI Coach Feedback</h3>
-      </div>
-
+    <div style={{ backgroundColor: 'rgba(34,197,94,0.04)', border: '1px solid rgba(34,197,94,0.15)', borderRadius: '16px', padding: '28px 32px' }}>
+      <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#22c55e', marginBottom: '22px' }}>AI Coach Feedback</h3>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
         {feedback.map(({ color, title, text }) => (
           <div key={title} style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
-            <div
-              style={{
-                width: '8px',
-                height: '8px',
-                borderRadius: '50%',
-                backgroundColor: color,
-                marginTop: '6px',
-                flexShrink: 0,
-              }}
-            />
+            <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: color, marginTop: '6px', flexShrink: 0 }} />
             <p style={{ fontSize: '14px', color: '#ccc', lineHeight: 1.7 }}>
               <span style={{ color: '#fff', fontWeight: 700 }}>{title}</span> {text}
             </p>
@@ -338,111 +249,105 @@ function AICoachFeedback() {
 }
 
 export default function AnalysisPage() {
-  const currentFrame = 40
+  // NEW: Grab the data from the router
+  const location = useLocation();
+  const navigate = useNavigate();
+  const pythonData = location.state?.analysisData;
+
+  // If someone tries to visit /analysis directly without uploading a video, send them back
+  if (!pythonData || !pythonData.elbow_angles) {
+    return (
+      <div style={{ backgroundColor: '#0a0a0a', minHeight: '100vh', color: '#fff', padding: '100px', textAlign: 'center' }}>
+        <h2>No video data found!</h2>
+        <button onClick={() => navigate('/upload')} style={{ padding: '10px 20px', marginTop: '20px', cursor: 'pointer' }}>Go Upload</button>
+      </div>
+    )
+  }
+
+  // MAPPING THE LIVE DATA
+  const totalFrames = pythonData.frames_processed;
+
+  // NEW: Extract the biomechanical metrics from the Python response
+  const bodyAlignmentAngle = pythonData.body_alignment_angle;
+  const headDropVariance = pythonData.head_drop_variance;
+
+  // Format the raw array into the exact {frame, angle} objects that Recharts wants
+  const liveChartData = pythonData.elbow_angles.map((angle, index) => ({
+    frame: index,
+    angle: Math.round(angle)
+  }));
+
+  // Extract the release frame and elbow angle directly from the backend.
+  // The Python Vertical Extension Method has already computed these accurately.
+  const releaseFrame = pythonData.release_frame_index ?? 0;
+  const releaseAngle = pythonData.release_elbow_angle != null
+    ? Math.round(pythonData.release_elbow_angle)
+    : null;
 
   const metrics = [
     {
-      icon: (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
-          <polyline
-            points="22 12 18 12 15 21 9 3 6 12 2 12"
-            stroke="#22c55e"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      ),
+      icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>,
       label: 'Elbow Angle at Release',
-      value: '118°',
-      badge: 'Within optimal range',
+      value: releaseAngle != null ? `${releaseAngle}°` : 'N/A',
+      badge: releaseAngle != null ? (releaseAngle >= 165 ? 'Legal Delivery' : 'Flexion Warning') : 'No Data',
+      badgeColor: releaseAngle != null ? (releaseAngle >= 165 ? 'green' : 'amber') : 'amber',
+    },
+    {
+      icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>,
+      label: 'Frames Processed',
+      value: totalFrames,
+      badge: 'Live Data',
       badgeColor: 'green',
     },
     {
-      icon: (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
-          <polygon
-            points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"
-            stroke="#22c55e"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      ),
-      label: 'Arm Speed',
-      value: '87 km/h',
-      badge: 'Above average',
-      badgeColor: 'green',
+      icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><line x1="12" y1="2" x2="12" y2="22" stroke={bodyAlignmentAngle > 15 ? '#ef4444' : '#22c55e'} strokeWidth="2" strokeLinecap="round" /><line x1="12" y1="2" x2="18" y2="8" stroke={bodyAlignmentAngle > 15 ? '#ef4444' : '#22c55e'} strokeWidth="2" strokeLinecap="round" /><circle cx="12" cy="2" r="1.5" fill={bodyAlignmentAngle > 15 ? '#ef4444' : '#22c55e'} /></svg>,
+      label: 'Body Alignment (Trunk Tilt)',
+      value: bodyAlignmentAngle !== null ? `${bodyAlignmentAngle}°` : 'N/A',
+      badge: bodyAlignmentAngle !== null
+        ? (bodyAlignmentAngle <= 15 ? 'Aligned' : 'Falling Away')
+        : 'No Data',
+      badgeColor: bodyAlignmentAngle !== null
+        ? (bodyAlignmentAngle <= 15 ? 'green' : 'red')
+        : 'amber',
     },
     {
-      icon: (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
-          <circle cx="12" cy="12" r="3" stroke="#22c55e" strokeWidth="2" />
-          <path
-            d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"
-            stroke="#22c55e"
-            strokeWidth="2"
-          />
-        </svg>
-      ),
-      label: 'Head Stability Score',
-      value: '8.2/10',
-      badge: 'Minor head movement detected',
-      badgeColor: 'amber',
+      icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="6" r="4" stroke={headDropVariance > 0.002 ? '#f59e0b' : '#22c55e'} strokeWidth="2" /><path d="M12 10v6" stroke={headDropVariance > 0.002 ? '#f59e0b' : '#22c55e'} strokeWidth="2" strokeLinecap="round" /><path d="M8 20h8" stroke={headDropVariance > 0.002 ? '#f59e0b' : '#22c55e'} strokeWidth="2" strokeLinecap="round" /></svg>,
+      label: 'Head Stability (Variance)',
+      value: headDropVariance !== null ? headDropVariance.toFixed(4) : 'N/A',
+      badge: headDropVariance !== null
+        ? (headDropVariance <= 0.002 ? 'Stable' : 'Head Drop Detected')
+        : 'No Data',
+      badgeColor: headDropVariance !== null
+        ? (headDropVariance <= 0.002 ? 'green' : 'amber')
+        : 'amber',
     },
   ]
 
   return (
-    <div
-      style={{
-        backgroundColor: '#0a0a0a',
-        minHeight: '100vh',
-        color: '#fff',
-        fontFamily: "'Segoe UI', sans-serif",
-      }}
-    >
+    <div style={{ backgroundColor: '#0a0a0a', minHeight: '100vh', color: '#fff', fontFamily: "'Segoe UI', sans-serif" }}>
       <SiteNavbar variant="app" activeLabel="Analysis" />
 
-      <main
-        style={{
-          padding: '40px clamp(20px, 4vw, 48px) 80px',
-          maxWidth: '1300px',
-          margin: '0 auto',
-          boxSizing: 'border-box',
-        }}
-      >
+      <main style={{ padding: '40px clamp(20px, 4vw, 48px) 80px', maxWidth: '1300px', margin: '0 auto', boxSizing: 'border-box' }}>
         <h1 style={{ fontSize: '24px', fontWeight: 700, marginBottom: '6px' }}>Biomechanics Analysis</h1>
         <p style={{ color: '#666', fontSize: '14px', marginBottom: '32px' }}>
           Your bowling action has been analysed. Review the metrics and insights below.
         </p>
 
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))',
-            gap: '20px',
-            marginBottom: '32px',
-            alignItems: 'start',
-          }}
-        >
-          <VideoPanel currentFrame={currentFrame} />
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '16px',
-              maxWidth: '100%',
-            }}
-          >
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', gap: '20px', marginBottom: '32px', alignItems: 'start' }}>
+          <VideoPanel currentFrame={releaseFrame} totalFrames={totalFrames} annotatedFrame={pythonData.annotated_release_frame} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '100%' }}>
             {metrics.map((m) => (
               <MetricCard key={m.label} {...m} />
             ))}
           </div>
         </div>
 
-        <ElbowChart currentFrame={currentFrame} />
-        <AICoachFeedback />
+        <ElbowChart currentFrame={releaseFrame} chartData={liveChartData} />
+        <AICoachFeedback
+          releaseAngle={releaseAngle}
+          bodyAlignmentAngle={bodyAlignmentAngle}
+          headDropVariance={headDropVariance}
+        />
       </main>
     </div>
   )
