@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { SiteNavbar } from './SiteNavbar.jsx'
 
+// Base URL of the FastAPI backend. Configured via frontend/.env (VITE_API_BASE_URL),
+// falling back to localhost for local development.
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000'
+
 export default function UploadPage() {
   const navigate = useNavigate()
   const [dragOver, setDragOver] = useState(false)
@@ -48,7 +52,7 @@ export default function UploadPage() {
 
     try {
       // Send the file to FastAPI
-      const response = await fetch("http://127.0.0.1:8000/upload-video/", {
+      const response = await fetch(`${API_BASE_URL}/upload-video/`, {
         method: "POST",
         body: formData,
       });
