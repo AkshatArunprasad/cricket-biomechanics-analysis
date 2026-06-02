@@ -48,7 +48,7 @@ import base64
 #     Lets us return proper HTTP error codes (like 400 Bad Request) with a
 #     human-readable message when something goes wrong.
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 # ── Computer-vision & maths imports ──────────────────────────────────────────
@@ -349,7 +349,7 @@ async def root():
 #   during those waits.
 
 @app.post("/upload-video/")
-async def upload_video(file: UploadFile = File(...)):
+async def upload_video(file: UploadFile = File(...), handedness: str = Form("Right")):
     """
     Accept an MP4 video upload, stream it to disk in 1 MB chunks, run
     MediaPipe Pose estimation on every frame, and return the per-frame
@@ -487,6 +487,31 @@ async def upload_video(file: UploadFile = File(...)):
 
     landmarker = PoseLandmarker.create_from_options(options)
 
+    # ── Handedness-aware landmark indices ────────────────────────────────
+    #
+    # MediaPipe assigns fixed indices to each joint.  For a RIGHT-arm bowler
+    # the bowling arm uses Right Shoulder(12) → Right Elbow(14) → Right Wrist(16)
+    # and the front foot is the Left Ankle(27).
+    #
+    # For a LEFT-arm bowler we simply mirror the indices so every downstream
+    # calculation (elbow angle, trunk tilt, release detection) works without
+    # any other code changes.
+
+    if handedness.strip().lower() == "left":
+        SHOULDER_IDX = 11   # Left Shoulder  (bowling arm for lefties)
+        ELBOW_IDX    = 13   # Left Elbow
+        WRIST_IDX    = 15   # Left Wrist
+        HIP_IDX      = 23   # Left Hip
+        KNEE_IDX     = 25   # Left Knee
+        ANKLE_IDX    = 28   # Right Ankle    (front foot for lefties)
+    else:
+        SHOULDER_IDX = 12   # Right Shoulder (bowling arm for righties)
+        ELBOW_IDX    = 14   # Right Elbow
+        WRIST_IDX    = 16   # Right Wrist
+        HIP_IDX      = 24   # Right Hip
+        KNEE_IDX     = 26   # Right Knee
+        ANKLE_IDX    = 27   # Left Ankle     (front foot for righties)
+
     # ── 4b. Open the saved video with OpenCV ─────────────────────────────
     #
     # cv2.VideoCapture opens the file and lets us read it frame-by-frame.
@@ -521,11 +546,16 @@ async def upload_video(file: UploadFile = File(...)):
     # We also keep Nose & Ankle coords for body-alignment and head-stability.
     nose_y_per_frame = []          # float – Y-coordinate of Nose per frame
     nose_coords_per_frame = []     # [x, y] of Nose per frame
-    ankle_coords_per_frame = []    # [x, y] of Left Ankle (27) per frame
-    ankle_y_per_frame = []         # float – Y-coordinate of Left Ankle per frame
-    wrist_y_per_frame = []         # float – Y-coordinate of Right Wrist (16) per frame
-    shoulder_coords_per_frame = [] # [x, y] of Right Shoulder (12) per frame
-    wrist_coords_per_frame = []    # [x, y] of Right Wrist (16) per frame
+    ankle_coords_per_frame = []    # [x, y] of front-foot Ankle per frame
+    ankle_y_per_frame = []         # float – Y-coordinate of front-foot Ankle per frame
+    wrist_y_per_frame = []         # float – Y-coordinate of bowling-arm Wrist per frame
+    shoulder_coords_per_frame = [] # [x, y] of bowling-arm Shoulder per frame
+    wrist_coords_per_frame = []    # [x, y] of bowling-arm Wrist per frame
+
+    # Camera-angle detection: horizontal distance between both shoulders.
+    # A side-on camera produces a small spread; a front-on camera produces
+    # a large spread because the chest is open to the lens.
+    shoulder_spread_per_frame = []
 
     # ── 4c. Frame-by-frame processing loop ───────────────────────────────
     #
@@ -586,26 +616,23 @@ async def upload_video(file: UploadFile = File(...)):
                 # result.pose_landmarks[0] = the first (and only) person.
                 landmarks = result.pose_landmarks[0]
 
-                # MediaPipe landmark indices for the right arm:
-                #   12 = Right Shoulder
-                #   14 = Right Elbow
-                #   16 = Right Wrist
+                # ── Extract bowling-arm joints using handedness indices ──
                 #
-                # Each landmark has .x and .y (normalised 0–1 coordinates).
-                # We extract them as simple [x, y] lists to pass into our
-                # calculate_angle() function.
+                # SHOULDER_IDX / ELBOW_IDX / WRIST_IDX were set earlier
+                # based on the handedness parameter, so this code works
+                # identically for both right-arm and left-arm bowlers.
 
                 shoulder = [
-                    landmarks[PoseLandmark.RIGHT_SHOULDER].x,
-                    landmarks[PoseLandmark.RIGHT_SHOULDER].y,
+                    landmarks[SHOULDER_IDX].x,
+                    landmarks[SHOULDER_IDX].y,
                 ]
                 elbow = [
-                    landmarks[PoseLandmark.RIGHT_ELBOW].x,
-                    landmarks[PoseLandmark.RIGHT_ELBOW].y,
+                    landmarks[ELBOW_IDX].x,
+                    landmarks[ELBOW_IDX].y,
                 ]
                 wrist = [
-                    landmarks[PoseLandmark.RIGHT_WRIST].x,
-                    landmarks[PoseLandmark.RIGHT_WRIST].y,
+                    landmarks[WRIST_IDX].x,
+                    landmarks[WRIST_IDX].y,
                 ]
 
                 # Calculate the elbow flexion angle.
@@ -624,20 +651,28 @@ async def upload_video(file: UploadFile = File(...)):
 
                 # ── Capture Nose, Ankle, and Wrist coordinates ───────
                 nose = [
-                    landmarks[0].x,   # Landmark 0 = Nose
+                    landmarks[0].x,   # Landmark 0 = Nose (same for both arms)
                     landmarks[0].y,
                 ]
-                left_ankle = [
-                    landmarks[27].x,  # Landmark 27 = Left Ankle
-                    landmarks[27].y,
+                front_ankle = [
+                    landmarks[ANKLE_IDX].x,  # Front-foot ankle (handedness-aware)
+                    landmarks[ANKLE_IDX].y,
                 ]
                 nose_y_per_frame.append(nose[1])
                 nose_coords_per_frame.append(nose)
-                ankle_coords_per_frame.append(left_ankle)
-                ankle_y_per_frame.append(left_ankle[1])
+                ankle_coords_per_frame.append(front_ankle)
+                ankle_y_per_frame.append(front_ankle[1])
                 wrist_y_per_frame.append(wrist[1])  # wrist already extracted above
                 shoulder_coords_per_frame.append(shoulder)
                 wrist_coords_per_frame.append(wrist)
+
+                # ── Camera-angle detection ───────────────────────────
+                # Measure how far apart the LEFT and RIGHT shoulders are
+                # on the horizontal axis.  We always use the raw indices
+                # 11 and 12 (not the handedness-swapped ones) because we
+                # want to compare both shoulders regardless of bowling arm.
+                shoulder_spread = abs(landmarks[11].x - landmarks[12].x)
+                shoulder_spread_per_frame.append(shoulder_spread)
 
             else:
                 # No pose detected in this frame — append None placeholders
@@ -650,6 +685,7 @@ async def upload_video(file: UploadFile = File(...)):
                 wrist_y_per_frame.append(None)
                 shoulder_coords_per_frame.append(None)
                 wrist_coords_per_frame.append(None)
+                shoulder_spread_per_frame.append(None)  # keep lists aligned
                 print(f"Frame {frame_count}: No pose detected.")
 
             # ── FREE MEMORY IMMEDIATELY ──────────────────────────────
@@ -794,6 +830,27 @@ async def upload_video(file: UploadFile = File(...)):
             head_drop_variance = 0.0
 
     # ══════════════════════════════════════════════════════════════════════
+    # Step 5f — Camera Angle Detection
+    # ══════════════════════════════════════════════════════════════════════
+    #
+    # A proper side-on video produces a small horizontal distance between
+    # the Left Shoulder (landmark 11) and Right Shoulder (landmark 12)
+    # because they overlap from the camera's perspective.  A front-on video
+    # shows the full chest, so the shoulders are spread wide apart.
+    #
+    # We take the median spread across all valid frames and compare it
+    # against a threshold of 0.15 (15% of normalised frame width).  Values
+    # above this indicate the camera is too front-on for reliable analysis.
+
+    valid_spreads = [s for s in shoulder_spread_per_frame if s is not None]
+    camera_angle_warning = False  # default: assume camera angle is fine
+
+    if valid_spreads:
+        median_spread = float(np.median(valid_spreads))
+        CAMERA_SPREAD_THRESHOLD = 0.15   # 15% of normalised frame width
+        camera_angle_warning = median_spread > CAMERA_SPREAD_THRESHOLD
+
+    # ══════════════════════════════════════════════════════════════════════
     # Step 6 — Generate Annotated Release Frame (Skeleton Overlay)
     # ══════════════════════════════════════════════════════════════════════
     #
@@ -857,9 +914,10 @@ async def upload_video(file: UploadFile = File(...)):
                         int(landmarks[0].x * w),
                         int(landmarks[0].y * h),
                     )
+                    # Use handedness-aware ankle index for trunk tilt line
                     ankle_px = (
-                        int(landmarks[27].x * w),
-                        int(landmarks[27].y * h),
+                        int(landmarks[ANKLE_IDX].x * w),
+                        int(landmarks[ANKLE_IDX].y * h),
                     )
                     cv2.line(
                         release_bgr, ankle_px, nose_px,
@@ -878,17 +936,18 @@ async def upload_video(file: UploadFile = File(...)):
                     # ── 6c. Draw Elbow Angle lines (Shoulder→Elbow→Wrist)
                     #
                     # Yellow poly-line highlighting the bowling arm.
+                    # Use handedness-aware indices for the bowling-arm overlay
                     shoulder_px = (
-                        int(landmarks[PoseLandmark.RIGHT_SHOULDER].x * w),
-                        int(landmarks[PoseLandmark.RIGHT_SHOULDER].y * h),
+                        int(landmarks[SHOULDER_IDX].x * w),
+                        int(landmarks[SHOULDER_IDX].y * h),
                     )
                     elbow_px = (
-                        int(landmarks[PoseLandmark.RIGHT_ELBOW].x * w),
-                        int(landmarks[PoseLandmark.RIGHT_ELBOW].y * h),
+                        int(landmarks[ELBOW_IDX].x * w),
+                        int(landmarks[ELBOW_IDX].y * h),
                     )
                     wrist_px = (
-                        int(landmarks[PoseLandmark.RIGHT_WRIST].x * w),
-                        int(landmarks[PoseLandmark.RIGHT_WRIST].y * h),
+                        int(landmarks[WRIST_IDX].x * w),
+                        int(landmarks[WRIST_IDX].y * h),
                     )
 
                     cv2.line(
@@ -905,12 +964,12 @@ async def upload_video(file: UploadFile = File(...)):
                     )
                     # Angle label at the elbow joint
                     elbow_angle_val = calculate_angle(
-                        [landmarks[PoseLandmark.RIGHT_SHOULDER].x,
-                         landmarks[PoseLandmark.RIGHT_SHOULDER].y],
-                        [landmarks[PoseLandmark.RIGHT_ELBOW].x,
-                         landmarks[PoseLandmark.RIGHT_ELBOW].y],
-                        [landmarks[PoseLandmark.RIGHT_WRIST].x,
-                         landmarks[PoseLandmark.RIGHT_WRIST].y],
+                        [landmarks[SHOULDER_IDX].x,
+                         landmarks[SHOULDER_IDX].y],
+                        [landmarks[ELBOW_IDX].x,
+                         landmarks[ELBOW_IDX].y],
+                        [landmarks[WRIST_IDX].x,
+                         landmarks[WRIST_IDX].y],
                     )
                     cv2.putText(
                         release_bgr,
@@ -957,4 +1016,6 @@ async def upload_video(file: UploadFile = File(...)):
         "body_alignment_angle": body_alignment_angle,
         "head_drop_variance": head_drop_variance,
         "annotated_release_frame": annotated_release_frame_b64,
+        "handedness": handedness,                      # which arm the bowler uses
+        "camera_angle_warning": camera_angle_warning,  # True if video is too front-on
     }
