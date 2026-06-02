@@ -29,6 +29,25 @@ import os
 import uuid
 import base64
 
+# ── Environment variables ────────────────────────────────────────────────────
+#
+# python-dotenv reads the backend/.env file (gitignored) and loads its
+# key=value pairs into os.environ.  This keeps secrets (Gemini key, Supabase
+# service-role key) out of the source code.  load_dotenv() silently does
+# nothing if no .env file is present, so it is safe in every environment.
+#
+# We use os.getenv(...) (not os.environ[...]) so a missing key returns None
+# instead of crashing the server at import time — the relevant feature can
+# then warn or stay disabled until the key is provided.
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
 # ── Third-party imports ──────────────────────────────────────────────────────
 #
 # fastapi.FastAPI

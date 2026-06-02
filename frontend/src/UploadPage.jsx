@@ -397,7 +397,7 @@ export default function UploadPage() {
 
     try {
       // Send the file to FastAPI
-      const response = await fetch("http://127.0.0.1:8000/upload-video/", {
+      const response = await fetch(`${API_BASE_URL}/upload-video/`, {
         method: "POST",
         body: formData,
       });
