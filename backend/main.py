@@ -48,6 +48,73 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
+# ── Supabase client (initialised once at startup) ────────────────────────────
+#
+# create_client() returns a synchronous Supabase client.  We guard the call
+# behind an env-var check so the server still boots (without cloud features)
+# when no .env has been populated yet.  Every database/storage call later in
+# the code must also check `supabase_client is not None` before proceeding.
+#
+# We import here (after load_dotenv) so the keys are already in os.environ.
+
+from supabase import create_client, Client as SupabaseClient
+
+supabase_client: SupabaseClient | None = None
+if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+    supabase_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    print("[INFO] Supabase client initialised.")
+else:
+    print("[WARN] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set — "
+          "cloud storage and database features are disabled.")
+
+
+def get_or_create_ghost_user() -> str | None:
+    """
+    Development helper — ensures there is always at least one row in
+    `profiles` so that `sessions.user_id` FK constraints never fail while
+    the authentication UI is still being built.
+
+    Strategy
+    --------
+    1. Query `profiles` for any existing row.
+    2. If one is found, return its id.
+    3. If the table is empty, generate a fresh UUID, insert a 'Guest Bowler'
+       profile, and return that id.
+
+    Returns None if supabase_client is not initialised (keys not set).
+    """
+    if not supabase_client:
+        return None
+    try:
+        # Fetch ONE existing profile (cheapest possible query).
+        existing = (
+            supabase_client
+            .table("profiles")
+            .select("id")
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            ghost_id = existing.data[0]["id"]
+            print(f"[INFO] Ghost user resolved: {ghost_id}")
+            return ghost_id
+
+        # No profiles exist yet — create a guest row.
+        # NOTE: profiles.id must match an auth.users row due to the FK.
+        # We use a fixed, well-known UUID so it can be pre-seeded once
+        # in the Supabase Auth dashboard (Dashboard → Auth → Users → Add user).
+        GHOST_UUID = "00000000-0000-0000-0000-000000000001"
+        supabase_client.table("profiles").insert({
+            "id":        GHOST_UUID,
+            "full_name": "Guest Bowler",
+            "role":      "player",
+        }).execute()
+        print(f"[INFO] Ghost user created: {GHOST_UUID}")
+        return GHOST_UUID
+    except Exception as exc:
+        print(f"[WARN] get_or_create_ghost_user failed: {exc}")
+        return None
+
 # ── Third-party imports ──────────────────────────────────────────────────────
 #
 # fastapi.FastAPI
@@ -368,7 +435,11 @@ async def root():
 #   during those waits.
 
 @app.post("/upload-video/")
-async def upload_video(file: UploadFile = File(...), handedness: str = Form("Right")):
+async def upload_video(
+    file: UploadFile = File(...),
+    handedness: str = Form("Right"),
+    user_id: str | None = Form(None),  # Optional — ghost user fills in when omitted
+):
     """
     Accept an MP4 video upload, stream it to disk in 1 MB chunks, run
     MediaPipe Pose estimation on every frame, and return the per-frame
@@ -456,6 +527,36 @@ async def upload_video(file: UploadFile = File(...), handedness: str = Form("Rig
         # Always close the UploadFile's internal file handle to free
         # resources, even if an error occurred above.
         await file.close()
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Step 3b — Upload Raw Video to Supabase Storage
+    # ══════════════════════════════════════════════════════════════════════
+    #
+    # The video is already safely on disk.  We now stream it up to the
+    # Supabase 'videos' Storage bucket so the frontend can replay it later.
+    # The storage path is  uploads/<uuid>.mp4  to keep the bucket tidy.
+    #
+    # This step is OPTIONAL — if Supabase keys aren't set, we carry on
+    # with local analysis only and video_public_url stays None.
+
+    video_public_url: str | None = None
+
+    if supabase_client:
+        try:
+            storage_path = f"uploads/{unique_filename}"
+            with open(file_path, "rb") as vid_bytes:
+                supabase_client.storage.from_("videos").upload(
+                    path=storage_path,
+                    file=vid_bytes,
+                    file_options={"content-type": "video/mp4"},
+                )
+            video_public_url = supabase_client.storage.from_("videos").get_public_url(
+                storage_path
+            )
+            print(f"[INFO] Video uploaded to Storage: {video_public_url}")
+        except Exception as exc:
+            # Storage failure must not abort the biomechanics analysis.
+            print(f"[WARN] Supabase Storage upload failed: {exc}")
 
     # ══════════════════════════════════════════════════════════════════════
     # Step 4 — MediaPipe Pose Estimation (frame-by-frame)
@@ -1011,14 +1112,128 @@ async def upload_video(file: UploadFile = File(...), handedness: str = Form("Rig
                 del release_bgr, release_rgb
 
     # ══════════════════════════════════════════════════════════════════════
+    # Step 6b — Upload Annotated Frame to Supabase Storage
+    # ══════════════════════════════════════════════════════════════════════
+    #
+    # The annotated release frame JPEG (Base64 in memory) is also saved to
+    # Supabase Storage so the frontend can display it from a persistent URL
+    # rather than relying on the transient Base64 response payload.
+    # Path: annotated/<uuid>.jpg
+
+    annotated_frame_url: str | None = None
+
+    if supabase_client and annotated_release_frame_b64:
+        try:
+            annotated_bytes = base64.b64decode(annotated_release_frame_b64)
+            annotated_storage_path = f"annotated/{unique_filename.replace('.mp4', '.jpg')}"
+            supabase_client.storage.from_("videos").upload(
+                path=annotated_storage_path,
+                file=annotated_bytes,
+                file_options={"content-type": "image/jpeg"},
+            )
+            annotated_frame_url = supabase_client.storage.from_("videos").get_public_url(
+                annotated_storage_path
+            )
+            print(f"[INFO] Annotated frame uploaded: {annotated_frame_url}")
+        except Exception as exc:
+            print(f"[WARN] Annotated frame Storage upload failed: {exc}")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Step 6c — Persist Session and Kinematics to Supabase Database
+    # ══════════════════════════════════════════════════════════════════════
+    #
+    # Insert order matters because of the foreign key chain:
+    #   1. sessions          (parent — must exist first)
+    #   2. kinematic_data    (1-to-1 with session via unique FK)
+    #   3. elbow_angle_series (1-to-many per session, bulk-inserted)
+    #
+    # Columns that require future computation (knee_flexion_*, hip_shoulder
+    # _separation, arm_speed_normalised, injury_risk_score, risk_level,
+    # gemini_coaching) are intentionally omitted here — Postgres will leave
+    # them NULL, which is allowed by the schema.  They will be populated by
+    # the Gemini AI pipeline in a later sprint.
+    #
+    # All DB operations are wrapped in a single try/except so a transient
+    # cloud error does NOT invalidate the biomechanics results already
+    # computed — the client still receives the full metrics payload.
+
+    session_id: str | None = None
+
+    if supabase_client:
+        # Resolve user_id: prefer the one sent by the client, fall back to
+        # the ghost user so DB inserts never fail during pre-auth development.
+        resolved_user_id = user_id or get_or_create_ghost_user()
+
+        if not resolved_user_id:
+            print("[WARN] No user_id available — skipping DB inserts.")
+        else:
+            try:
+                # ── 1. Insert into sessions ───────────────────────────────
+                #
+                # handedness must be lowercase ('right'/'left') to satisfy
+                # the CHECK constraint in the schema.
+                session_result = (
+                    supabase_client
+                    .table("sessions")
+                    .insert({
+                        "user_id":             resolved_user_id,
+                        "filename":            unique_filename,
+                        "handedness":          handedness.strip().lower(),
+                        "frames_processed":    frame_count,
+                        "release_frame_index": release_frame_index,
+                        "annotated_frame_url": annotated_frame_url,
+                    })
+                    .execute()
+                )
+                session_id = session_result.data[0]["id"]
+                print(f"[INFO] Session inserted: {session_id}")
+
+                # ── 2. Insert into kinematic_data ─────────────────────────
+                supabase_client.table("kinematic_data").insert({
+                    "session_id":           session_id,
+                    "release_elbow_angle":  release_elbow_angle,
+                    "body_alignment_angle": body_alignment_angle,
+                    "head_drop_variance":   head_drop_variance,
+                    "camera_angle_warning": camera_angle_warning,
+                    # Future fields (nullable — populated by later pipelines):
+                    # "knee_flexion_at_ffc":      None,
+                    # "knee_flexion_at_release":  None,
+                    # "hip_shoulder_separation":  None,
+                    # "head_x_variance":          None,
+                    # "injury_risk_score":        None,
+                    # "risk_level":               None,
+                    # "arm_speed_normalised":     None,
+                    # "gemini_coaching":          None,
+                }).execute()
+                print("[INFO] kinematic_data row inserted.")
+
+                # ── 3. Bulk-insert elbow_angle_series ─────────────────────
+                #
+                # Build one row per detected frame.  We skip None entries
+                # (frames where pose detection failed) to keep the table clean.
+                series_rows = [
+                    {"session_id": session_id, "frame_index": i, "elbow_angle": angle}
+                    for i, angle in enumerate(angle_data)
+                    if angle is not None
+                ]
+                if series_rows:
+                    supabase_client.table("elbow_angle_series").insert(series_rows).execute()
+                    print(f"[INFO] elbow_angle_series: {len(series_rows)} rows inserted.")
+
+            except Exception as exc:
+                # Log the error but do NOT raise — return the biomechanics
+                # results to the client regardless of the cloud failure.
+                print(f"[ERROR] Supabase DB persist failed: {exc}")
+
+
+    # ══════════════════════════════════════════════════════════════════════
     # TODO — FUTURE ENHANCEMENTS
     # ══════════════════════════════════════════════════════════════════════
     #
-    #   • Send the elbow_angles data to the Gemini API for AI coaching
-    #     feedback  (see google-generativeai in requirements.txt).
-    #
-    #   • Store results in Supabase (PostgreSQL) so the frontend can
-    #     fetch historical data and plot graphs.
+    #   • Invoke Gemini API with the angle series for AI coaching feedback
+    #     and PATCH the kinematic_data row with the result.
+    #   • Compute knee_flexion, hip_shoulder_separation, arm_speed_normalised
+    #     and PATCH kinematic_data accordingly.
     # ══════════════════════════════════════════════════════════════════════
 
     # ── Step 7: Return success response ──────────────────────────────────
@@ -1026,15 +1241,23 @@ async def upload_video(file: UploadFile = File(...), handedness: str = Form("Rig
     # Return the packaged data — now includes biomechanical metrics
     # and the annotated release frame image.
     return {
-        "message": "Video processed successfully.",
-        "filename": unique_filename,
-        "frames_processed": frame_count,
-        "elbow_angles": [a for a in angle_data if a is not None],
-        "release_frame_index": release_frame_index,
-        "release_elbow_angle": release_elbow_angle,
-        "body_alignment_angle": body_alignment_angle,
-        "head_drop_variance": head_drop_variance,
+        "message":                "Video processed successfully.",
+        # ── Cloud identifiers ─────────────────────────────────────────
+        "session_id":             session_id,          # UUID from DB (None if Supabase not configured)
+        "video_url":              video_public_url,    # Public URL of raw MP4 in Storage
+        "annotated_frame_url":    annotated_frame_url, # Public URL of annotated JPEG in Storage
+        # ── Metadata ─────────────────────────────────────────────────
+        "filename":               unique_filename,
+        "handedness":             handedness,
+        "frames_processed":       frame_count,
+        # ── Biomechanical metrics ─────────────────────────────────────
+        "elbow_angles":           [a for a in angle_data if a is not None],
+        "release_frame_index":    release_frame_index,
+        "release_elbow_angle":    release_elbow_angle,
+        "body_alignment_angle":   body_alignment_angle,
+        "head_drop_variance":     head_drop_variance,
+        "camera_angle_warning":   camera_angle_warning,
+        # ── Annotated release frame (Base64 fallback) ─────────────────
+        # Kept for backwards-compat when Storage is not configured.
         "annotated_release_frame": annotated_release_frame_b64,
-        "handedness": handedness,                      # which arm the bowler uses
-        "camera_angle_warning": camera_angle_warning,  # True if video is too front-on
     }
