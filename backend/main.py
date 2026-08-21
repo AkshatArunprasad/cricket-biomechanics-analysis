@@ -59,14 +59,13 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 from supabase import create_client, Client as SupabaseClient
 
-from google import genai as genai_sdk
+from google import genai
 
 # The new google-genai SDK uses a Client object, not genai.configure() /
 # genai.GenerativeModel() — those belong to the old google-generativeai package.
 gemini_client = None
-GEMINI_MODEL_NAME = "gemini-2.0-flash"
 if GEMINI_API_KEY:
-    gemini_client = genai_sdk.Client(api_key=GEMINI_API_KEY)
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
     print("[INFO] Gemini client initialised.")
 else:
     print("[WARN] GEMINI_API_KEY not set — AI coaching feedback is disabled.")
@@ -137,16 +136,9 @@ def generate_gemini_coaching(
     head_drop_variance: float | None,
     camera_angle_warning: bool,
 ) -> dict | None:
-    """
-    Calls Gemini with the bowler's kinematic metrics and returns structured
-    coaching feedback as a dict, ready to store in kinematic_data.gemini_coaching.
-    Returns None if Gemini is unavailable or the call/parse fails — callers
-    must treat that as "skip this field", never as a hard error.
-    """
     if not gemini_client:
         return None
 
-    # Guard against missing metrics (e.g. pose detection failed on release frame)
     if release_elbow_angle is None or body_alignment_angle is None:
         print("[WARN] Skipping Gemini coaching — incomplete kinematic data.")
         return None
@@ -158,7 +150,7 @@ Bowler data:
 - Handedness: {handedness}
 - Elbow angle at release: {release_elbow_angle:.1f} degrees
 - Trunk (body alignment) tilt at release: {body_alignment_angle:.1f} degrees from vertical
-- Head stability variance during delivery: {head_drop_variance:.5f}
+- Head stability variance during delivery: {head_drop_variance:.2f}
 - Camera angle warning: {camera_angle_warning}
 
 Context: ICC regulations permit up to 15 degrees of elbow extension between the
@@ -179,14 +171,11 @@ Do not include any text outside the JSON object.
 """
 
     try:
-        # New google-genai SDK: use client.models.generate_content()
         response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL_NAME,
+            model="gemini-3.6-flash",
             contents=prompt,
         )
         raw_text = response.text.strip()
-
-        # Gemini sometimes wraps JSON in ```json ... ``` fences — strip if present
         raw_text = re.sub(r"^```json\s*|\s*```$", "", raw_text, flags=re.MULTILINE).strip()
 
         coaching_data = json.loads(raw_text)
@@ -199,7 +188,6 @@ Do not include any text outside the JSON object.
     except Exception as exc:
         print(f"[WARN] Gemini API call failed: {exc}")
         return None
-
 # ── Third-party imports ──────────────────────────────────────────────────────
 #
 # fastapi.FastAPI
