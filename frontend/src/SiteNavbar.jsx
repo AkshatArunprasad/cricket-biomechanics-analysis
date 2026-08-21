@@ -1,4 +1,6 @@
+import { useNavigate } from 'react-router-dom'
 import { Link } from 'react-router-dom'
+import { supabase } from './supabaseClient.js'
 
 const LINKS = [
   { label: 'Upload', to: '/upload', hash: undefined },
@@ -12,6 +14,12 @@ function linkTo({ to, hash }) {
 
 export function SiteNavbar({ variant = 'landing', activeLabel }) {
   const isApp = variant === 'app'
+  const navigate = useNavigate()
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut()
+    navigate('/login', { replace: true })
+  }
 
   return (
     <nav
@@ -113,6 +121,32 @@ export function SiteNavbar({ variant = 'landing', activeLabel }) {
             </Link>
           )
         })}
+
+        {/* Sign-out button — only shown in the app navbar */}
+        {isApp && (
+          <button
+            type="button"
+            onClick={handleSignOut}
+            style={{
+              background: 'transparent',
+              color: '#aaaaaa',
+              border: '1px solid transparent',
+              borderRadius: '8px',
+              padding: '8px 16px',
+              fontSize: '15px',
+              fontFamily: "'Inter','Segoe UI',system-ui,sans-serif",
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              transition: 'color 0.2s, border-color 0.2s',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = '#ef4444'; e.currentTarget.style.borderColor = 'rgba(239,68,68,0.3)' }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = '#aaaaaa'; e.currentTarget.style.borderColor = 'transparent' }}
+          >
+            <span style={{ fontSize: '13px' }} aria-hidden>↩</span> Sign Out
+          </button>
+        )}
       </div>
     </nav>
   )

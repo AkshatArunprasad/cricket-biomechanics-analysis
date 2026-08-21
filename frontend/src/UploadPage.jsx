@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { SiteNavbar } from './SiteNavbar.jsx'
+import { supabase } from './supabaseClient.js'
 
 /* ─── keyframe animations ─── */
 const css = `
@@ -385,15 +386,26 @@ export default function UploadPage() {
     e.target.value = ''
   }
 
-  // NEW: The engine that talks to Python
+  // The engine that talks to FastAPI.
+  // API_BASE_URL is read from the Vite environment (frontend/.env → VITE_API_BASE_URL).
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000'
+
   const handleAnalyze = async () => {
     if (!videoFile) return;
 
     setIsUploading(true);
     setMsgIdx(0);
+
+    // Get the authenticated user's UUID from Supabase Auth.
+    // ProtectedRoute ensures this page is only reachable with a session.
+    const { data: { user } } = await supabase.auth.getUser()
+    const userId = user?.id ?? null
+
     const formData = new FormData();
     formData.append("file", videoFile);
     formData.append("handedness", handedness);
+    if (userId) formData.append("user_id", userId);
+    // If userId is null the backend ghost-user fallback handles it.
 
     try {
       // Send the file to FastAPI
@@ -404,15 +416,17 @@ export default function UploadPage() {
 
       if (response.ok) {
         const pythonData = await response.json();
-        // Redirect to the analysis page, but pass the Python math along in the router state!
+        // Redirect to the analysis page, passing the results through router state.
         navigate('/analysis', { state: { analysisData: pythonData } });
       } else {
-        alert("Upload failed. Check the FastAPI terminal for errors.");
+        const errorBody = await response.text();
+        console.error('Upload failed:', response.status, errorBody);
+        alert(`Upload failed (${response.status}). Check the FastAPI terminal for details.`);
         setIsUploading(false);
       }
     } catch (error) {
-      console.error("Error:", error);
-      alert("Network Error: Is the FastAPI server running?");
+      console.error("Network error:", error);
+      alert("Network Error: Is the FastAPI server running at " + API_BASE_URL + "?");
       setIsUploading(false);
     }
   };

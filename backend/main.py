@@ -59,6 +59,18 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 from supabase import create_client, Client as SupabaseClient
 
+from google import genai as genai_sdk
+
+# The new google-genai SDK uses a Client object, not genai.configure() /
+# genai.GenerativeModel() — those belong to the old google-generativeai package.
+gemini_client = None
+GEMINI_MODEL_NAME = "gemini-2.0-flash"
+if GEMINI_API_KEY:
+    gemini_client = genai_sdk.Client(api_key=GEMINI_API_KEY)
+    print("[INFO] Gemini client initialised.")
+else:
+    print("[WARN] GEMINI_API_KEY not set — AI coaching feedback is disabled.")
+
 supabase_client: SupabaseClient | None = None
 if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
     supabase_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -113,6 +125,79 @@ def get_or_create_ghost_user() -> str | None:
         return GHOST_UUID
     except Exception as exc:
         print(f"[WARN] get_or_create_ghost_user failed: {exc}")
+        return None
+
+import json
+import re
+
+def generate_gemini_coaching(
+    handedness: str,
+    release_elbow_angle: float | None,
+    body_alignment_angle: float | None,
+    head_drop_variance: float | None,
+    camera_angle_warning: bool,
+) -> dict | None:
+    """
+    Calls Gemini with the bowler's kinematic metrics and returns structured
+    coaching feedback as a dict, ready to store in kinematic_data.gemini_coaching.
+    Returns None if Gemini is unavailable or the call/parse fails — callers
+    must treat that as "skip this field", never as a hard error.
+    """
+    if not gemini_client:
+        return None
+
+    # Guard against missing metrics (e.g. pose detection failed on release frame)
+    if release_elbow_angle is None or body_alignment_angle is None:
+        print("[WARN] Skipping Gemini coaching — incomplete kinematic data.")
+        return None
+
+    prompt = f"""
+You are an expert cricket bowling biomechanics coach analysing a single delivery.
+
+Bowler data:
+- Handedness: {handedness}
+- Elbow angle at release: {release_elbow_angle:.1f} degrees
+- Trunk (body alignment) tilt at release: {body_alignment_angle:.1f} degrees from vertical
+- Head stability variance during delivery: {head_drop_variance:.5f}
+- Camera angle warning: {camera_angle_warning}
+
+Context: ICC regulations permit up to 15 degrees of elbow extension between the
+horizontal arm position and ball release. Excessive trunk tilt or head movement
+typically indicates balance or control issues rather than injury risk on their own.
+
+Based on this data, respond in strict JSON with this shape:
+{{
+  "summary": "one paragraph, plain language, coach-to-player tone",
+  "strengths": ["short bullet", "short bullet"],
+  "areas_to_improve": ["short bullet", "short bullet"],
+  "drills": [
+    {{"name": "drill name", "focus": "what it targets", "description": "2-3 sentences"}}
+  ]
+}}
+
+Do not include any text outside the JSON object.
+"""
+
+    try:
+        # New google-genai SDK: use client.models.generate_content()
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL_NAME,
+            contents=prompt,
+        )
+        raw_text = response.text.strip()
+
+        # Gemini sometimes wraps JSON in ```json ... ``` fences — strip if present
+        raw_text = re.sub(r"^```json\s*|\s*```$", "", raw_text, flags=re.MULTILINE).strip()
+
+        coaching_data = json.loads(raw_text)
+        print("[INFO] Gemini coaching generated successfully.")
+        return coaching_data
+
+    except json.JSONDecodeError as exc:
+        print(f"[WARN] Gemini returned invalid JSON: {exc}")
+        return None
+    except Exception as exc:
+        print(f"[WARN] Gemini API call failed: {exc}")
         return None
 
 # ── Third-party imports ──────────────────────────────────────────────────────
@@ -1158,6 +1243,7 @@ async def upload_video(
     # computed — the client still receives the full metrics payload.
 
     session_id: str | None = None
+    gemini_coaching_result = None  # initialised here so the return dict is always valid
 
     if supabase_client:
         # Resolve user_id: prefer the one sent by the client, fall back to
@@ -1188,6 +1274,14 @@ async def upload_video(
                 session_id = session_result.data[0]["id"]
                 print(f"[INFO] Session inserted: {session_id}")
 
+                gemini_coaching_result = generate_gemini_coaching(
+                    handedness=handedness,
+                    release_elbow_angle=release_elbow_angle,
+                    body_alignment_angle=body_alignment_angle,
+                    head_drop_variance=head_drop_variance,
+                    camera_angle_warning=camera_angle_warning,
+                )
+
                 # ── 2. Insert into kinematic_data ─────────────────────────
                 supabase_client.table("kinematic_data").insert({
                     "session_id":           session_id,
@@ -1195,6 +1289,7 @@ async def upload_video(
                     "body_alignment_angle": body_alignment_angle,
                     "head_drop_variance":   head_drop_variance,
                     "camera_angle_warning": camera_angle_warning,
+                    "gemini_coaching":      json.dumps(gemini_coaching_result) if gemini_coaching_result else None,
                     # Future fields (nullable — populated by later pipelines):
                     # "knee_flexion_at_ffc":      None,
                     # "knee_flexion_at_release":  None,
@@ -1203,7 +1298,6 @@ async def upload_video(
                     # "injury_risk_score":        None,
                     # "risk_level":               None,
                     # "arm_speed_normalised":     None,
-                    # "gemini_coaching":          None,
                 }).execute()
                 print("[INFO] kinematic_data row inserted.")
 
@@ -1260,4 +1354,5 @@ async def upload_video(
         # ── Annotated release frame (Base64 fallback) ─────────────────
         # Kept for backwards-compat when Storage is not configured.
         "annotated_release_frame": annotated_release_frame_b64,
+        "gemini_coaching":        gemini_coaching_result,
     }

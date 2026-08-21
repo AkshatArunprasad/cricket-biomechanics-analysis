@@ -31,36 +31,36 @@ const css = `
 
 /* ─── design tokens ─── */
 const T = {
-  bg:       '#06080c',
-  surface:  '#0d1117',
-  card:     '#111822',
-  border:   '#1b2535',
-  accent:   '#22c55e',
-  accentDim:'rgba(34,197,94,0.12)',
-  accentMid:'rgba(34,197,94,0.35)',
-  text:     '#e2e8f0',
-  muted:    '#7b8ba3',
-  white:    '#ffffff',
-  amber:    '#f59e0b',
+  bg: '#06080c',
+  surface: '#0d1117',
+  card: '#111822',
+  border: '#1b2535',
+  accent: '#22c55e',
+  accentDim: 'rgba(34,197,94,0.12)',
+  accentMid: 'rgba(34,197,94,0.35)',
+  text: '#e2e8f0',
+  muted: '#7b8ba3',
+  white: '#ffffff',
+  amber: '#f59e0b',
   amberDim: 'rgba(245,158,11,0.12)',
   amberMid: 'rgba(245,158,11,0.30)',
-  red:      '#ef4444',
-  redDim:   'rgba(239,68,68,0.10)',
-  redMid:   'rgba(239,68,68,0.30)',
-  blue:     '#3b82f6',
-  blueDim:  'rgba(59,130,246,0.12)',
-  purple:   '#a855f7',
-  purpleDim:'rgba(168,85,247,0.12)',
-  font:     "'Inter', 'Segoe UI', system-ui, sans-serif",
-  radius:   '14px',
+  red: '#ef4444',
+  redDim: 'rgba(239,68,68,0.10)',
+  redMid: 'rgba(239,68,68,0.30)',
+  blue: '#3b82f6',
+  blueDim: 'rgba(59,130,246,0.12)',
+  purple: '#a855f7',
+  purpleDim: 'rgba(168,85,247,0.12)',
+  font: "'Inter', 'Segoe UI', system-ui, sans-serif",
+  radius: '14px',
   radiusSm: '10px',
 }
 
 /* badge colour presets */
 const BADGE = {
   green: { bg: T.accentDim, border: T.accentMid, text: T.accent },
-  amber: { bg: T.amberDim,  border: T.amberMid,  text: T.amber  },
-  red:   { bg: T.redDim,    border: T.redMid,     text: T.red    },
+  amber: { bg: T.amberDim, border: T.amberMid, text: T.amber },
+  red: { bg: T.redDim, border: T.redMid, text: T.red },
 }
 
 /* ====================================================================
@@ -202,7 +202,7 @@ function ScoreCard({ score }) {
    ==================================================================== */
 function ActionButtons() {
   const handleExport = () => alert('Export PNG: Coming soon!')
-  const handleShare  = () => alert('Share link: Coming soon!')
+  const handleShare = () => alert('Share link: Coming soon!')
 
   return (
     <div
@@ -581,7 +581,137 @@ function FeedbackSection({ title, icon, items }) {
   )
 }
 
-function AICoachFeedback({ releaseAngle, bodyAlignmentAngle, headDropVariance }) {
+function AICoachFeedback({ geminiCoaching, releaseAngle, bodyAlignmentAngle, headDropVariance }) {
+  // ─── Preferred path: real Gemini-generated feedback ───
+  if (geminiCoaching) {
+    const strengthItems = (geminiCoaching.strengths || []).map((text) => ({
+      color: T.accent,
+      text,
+    }))
+    const improveItems = (geminiCoaching.areas_to_improve || []).map((text) => ({
+      color: T.amber,
+      text,
+    }))
+
+    return (
+      <div
+        style={{
+          background: `linear-gradient(165deg, rgba(34,197,94,0.05), rgba(34,197,94,0.01))`,
+          border: `1px solid ${T.accentMid}`,
+          borderRadius: T.radius,
+          padding: '28px 32px',
+          animation: 'an-fade-in 0.5s ease-out 0.25s both',
+        }}
+      >
+        <h3
+          style={{
+            fontSize: '18px',
+            fontWeight: 700,
+            color: T.accent,
+            marginBottom: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+          }}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <path d="M12 2L2 7l10 5 10-5-10-5z" stroke={T.accent} strokeWidth="2" strokeLinejoin="round" />
+            <path d="M2 17l10 5 10-5M2 12l10 5 10-5" stroke={T.accent} strokeWidth="2" strokeLinejoin="round" />
+          </svg>
+          AI Coach Feedback
+        </h3>
+
+        {/* Summary paragraph */}
+        {geminiCoaching.summary && (
+          <p
+            style={{
+              fontSize: '14px',
+              color: T.text,
+              lineHeight: 1.7,
+              marginBottom: '24px',
+              paddingBottom: '20px',
+              borderBottom: `1px solid ${T.border}`,
+            }}
+          >
+            {geminiCoaching.summary}
+          </p>
+        )}
+
+        {strengthItems.length > 0 && (
+          <FeedbackSection
+            title="Strengths"
+            icon={
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path d="M9 11l3 3 8-8" stroke={T.accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            }
+            items={strengthItems}
+          />
+        )}
+
+        {improveItems.length > 0 && (
+          <FeedbackSection
+            title="Areas to Improve"
+            icon={
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path d="M12 9v4M12 17h.01" stroke={T.amber} strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            }
+            items={improveItems}
+          />
+        )}
+
+        {/* Drills — richer cards since they carry name/focus/description */}
+        {geminiCoaching.drills && geminiCoaching.drills.length > 0 && (
+          <div>
+            <h4
+              style={{
+                fontSize: '14px',
+                fontWeight: 700,
+                color: T.white,
+                marginBottom: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.8px',
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" stroke={T.accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Recommended Drills
+            </h4>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {geminiCoaching.drills.map((drill, i) => (
+                <div
+                  key={i}
+                  style={{
+                    backgroundColor: T.surface,
+                    border: `1px solid ${T.border}`,
+                    borderRadius: T.radiusSm,
+                    padding: '14px 18px',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px', marginBottom: '4px' }}>
+                    <p style={{ fontSize: '14px', fontWeight: 700, color: T.white }}>{drill.name}</p>
+                    {drill.focus && (
+                      <span style={{ fontSize: '11px', color: T.accent, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                        {drill.focus}
+                      </span>
+                    )}
+                  </div>
+                  <p style={{ fontSize: '13px', color: T.muted, lineHeight: 1.6 }}>{drill.description}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // ─── Fallback: original rule-based feedback (unchanged) ───
   const isChucking = releaseAngle < 165
   const isFallingAway = bodyAlignmentAngle !== null && bodyAlignmentAngle > 15
   const isHeadUnstable = headDropVariance !== null && headDropVariance > 0.002
@@ -700,7 +830,6 @@ function AICoachFeedback({ releaseAngle, bodyAlignmentAngle, headDropVariance })
     </div>
   )
 }
-
 /* ====================================================================
    PAGE ROOT  (EXISTING data flow preserved exactly)
    ==================================================================== */
@@ -912,6 +1041,7 @@ export default function AnalysisPage() {
         <ElbowChart currentFrame={releaseFrame} chartData={liveChartData} />
 
         <AICoachFeedback
+          geminiCoaching={pythonData.gemini_coaching}
           releaseAngle={releaseAngle}
           bodyAlignmentAngle={bodyAlignmentAngle}
           headDropVariance={headDropVariance}
