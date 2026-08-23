@@ -11,6 +11,7 @@ import {
   YAxis,
 } from 'recharts'
 import { SiteNavbar } from './SiteNavbar.jsx'
+import jsPDF from 'jspdf'
 
 /* ─── keyframe animations ─── */
 const css = `
@@ -198,80 +199,674 @@ function ScoreCard({ score }) {
 }
 
 /* ====================================================================
-   EXPORT / SHARE BUTTONS
+   SHARE MODAL
    ==================================================================== */
-function ActionButtons() {
-  const handleExport = () => alert('Export PNG: Coming soon!')
-  const handleShare = () => alert('Share link: Coming soon!')
+function ShareModal({ onClose, shareUrl }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2500)
+    } catch {
+      // fallback for older browsers
+      const ta = document.createElement('textarea')
+      ta.value = shareUrl
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2500)
+    }
+  }
+
+  const handleNativeShare = async () => {
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'Cricket Biomechanics Analysis',
+          text: 'Check out my bowling action analysis from CricketBio!',
+          url: shareUrl,
+        })
+      } catch {/* user cancelled */}
+    } else {
+      handleCopy()
+    }
+  }
 
   return (
     <div
+      id="share-modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="share-modal-title"
+      onClick={(e) => e.target.id === 'share-modal-overlay' && onClose()}
       style={{
+        position: 'fixed',
+        inset: 0,
+        backgroundColor: 'rgba(0,0,0,0.7)',
+        backdropFilter: 'blur(6px)',
         display: 'flex',
-        gap: '10px',
-        flexWrap: 'wrap',
-        animation: 'an-fade-in 0.5s ease-out 0.1s both',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1000,
+        padding: '20px',
+        animation: 'an-fade-in 0.2s ease-out both',
       }}
     >
-      <button
-        type="button"
-        id="btn-export"
-        onClick={handleExport}
+      <div
         style={{
-          background: T.card,
-          color: T.text,
+          background: `linear-gradient(165deg, ${T.card}, ${T.surface})`,
           border: `1px solid ${T.border}`,
-          borderRadius: '8px',
-          padding: '9px 18px',
-          fontSize: '13px',
-          fontWeight: 600,
-          fontFamily: T.font,
-          cursor: 'pointer',
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '7px',
-          transition: 'border-color 0.2s, color 0.2s',
+          borderRadius: T.radius,
+          padding: '32px',
+          width: '100%',
+          maxWidth: '480px',
+          boxShadow: '0 24px 80px rgba(0,0,0,0.5)',
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.borderColor = T.accent; e.currentTarget.style.color = T.accent }}
-        onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.text }}
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-        Export PNG
-      </button>
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div style={{
+              width: '40px', height: '40px', borderRadius: '10px',
+              background: T.accentDim, border: `1px solid ${T.accentMid}`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <circle cx="18" cy="5" r="3" stroke={T.accent} strokeWidth="2" />
+                <circle cx="6" cy="12" r="3" stroke={T.accent} strokeWidth="2" />
+                <circle cx="18" cy="19" r="3" stroke={T.accent} strokeWidth="2" />
+                <path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98" stroke={T.accent} strokeWidth="2" />
+              </svg>
+            </div>
+            <div>
+              <h2 id="share-modal-title" style={{ fontSize: '17px', fontWeight: 700, color: T.white, marginBottom: '2px' }}>Share Analysis</h2>
+              <p style={{ fontSize: '12px', color: T.muted }}>Anyone with this link can view your report</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              background: 'none', border: `1px solid ${T.border}`, borderRadius: '8px',
+              color: T.muted, cursor: 'pointer', width: '32px', height: '32px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'border-color 0.2s, color 0.2s',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = T.red; e.currentTarget.style.color = T.red }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.muted }}
+          >
+            ✕
+          </button>
+        </div>
 
-      <button
-        type="button"
-        id="btn-share"
-        onClick={handleShare}
-        style={{
-          background: T.card,
-          color: T.text,
-          border: `1px solid ${T.border}`,
-          borderRadius: '8px',
-          padding: '9px 18px',
-          fontSize: '13px',
-          fontWeight: 600,
-          fontFamily: T.font,
-          cursor: 'pointer',
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '7px',
-          transition: 'border-color 0.2s, color 0.2s',
-        }}
-        onMouseEnter={(e) => { e.currentTarget.style.borderColor = T.accent; e.currentTarget.style.color = T.accent }}
-        onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.text }}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-          <circle cx="18" cy="5" r="3" stroke="currentColor" strokeWidth="2" />
-          <circle cx="6" cy="12" r="3" stroke="currentColor" strokeWidth="2" />
-          <circle cx="18" cy="19" r="3" stroke="currentColor" strokeWidth="2" />
-          <path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98" stroke="currentColor" strokeWidth="2" />
-        </svg>
-        Share
-      </button>
+        {/* URL Box */}
+        <div style={{
+          background: T.surface, border: `1px solid ${T.border}`,
+          borderRadius: '10px', padding: '12px 16px',
+          display: 'flex', alignItems: 'center', gap: '10px',
+          marginBottom: '16px',
+        }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" stroke={T.muted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" stroke={T.muted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span style={{ flex: 1, fontSize: '13px', color: T.muted, wordBreak: 'break-all', fontFamily: 'monospace' }}>
+            {shareUrl}
+          </span>
+        </div>
+
+        {/* Action buttons */}
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <button
+            type="button"
+            id="btn-copy-link"
+            onClick={handleCopy}
+            style={{
+              flex: 1,
+              background: copied ? T.accentDim : T.card,
+              color: copied ? T.accent : T.text,
+              border: `1px solid ${copied ? T.accentMid : T.border}`,
+              borderRadius: '8px', padding: '10px 16px',
+              fontSize: '13px', fontWeight: 600, fontFamily: T.font,
+              cursor: 'pointer', display: 'flex', alignItems: 'center',
+              justifyContent: 'center', gap: '7px',
+              transition: 'all 0.2s',
+            }}
+          >
+            {copied ? (
+              <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden><path d="M9 11l3 3 8-8" stroke={T.accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg> Copied!</>
+            ) : (
+              <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden><rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor" strokeWidth="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" stroke="currentColor" strokeWidth="2" /></svg> Copy Link</>
+            )}
+          </button>
+
+          {typeof navigator !== 'undefined' && navigator.share && (
+            <button
+              type="button"
+              id="btn-native-share"
+              onClick={handleNativeShare}
+              style={{
+                background: `linear-gradient(135deg, ${T.accent}, #16a34a)`,
+                color: '#000', border: 'none',
+                borderRadius: '8px', padding: '10px 18px',
+                fontSize: '13px', fontWeight: 700, fontFamily: T.font,
+                cursor: 'pointer', display: 'flex', alignItems: 'center',
+                gap: '7px', whiteSpace: 'nowrap',
+                transition: 'opacity 0.2s',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.88' }}
+              onMouseLeave={(e) => { e.currentTarget.style.opacity = '1' }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8M16 6l-4-4-4 4M12 2v13" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Share
+            </button>
+          )}
+        </div>
+        {/* Info note */}
+        <p style={{ marginTop: '16px', fontSize: '12px', color: T.muted, textAlign: 'center' }}>
+          This link encodes your analysis snapshot and does not expire.
+        </p>
+      </div>
     </div>
+  )
+}
+
+/* ====================================================================
+   EXPORT PDF HELPER
+   ==================================================================== */
+async function exportToPDF(data) {
+  const {
+    overallScore, overallLabel, releaseAngle, bodyAlignmentAngle, headDropVariance,
+    totalFrames, releaseFrame, annotatedFrame, geminiCoaching,
+    elbowPercentile, trunkPercentile, headPercentile,
+  } = data
+
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+  const W = 210   // A4 width mm
+  const H = 297   // A4 height mm
+  const pad = 18  // page padding
+  let y = pad
+
+  // ─── helpers ────────────────────────────────────────────────────────
+  const hex2rgb = (hex) => {
+    const r = parseInt(hex.slice(1, 3), 16)
+    const g = parseInt(hex.slice(3, 5), 16)
+    const b = parseInt(hex.slice(5, 7), 16)
+    return [r, g, b]
+  }
+  const setFill = (hex) => { const [r,g,b]=hex2rgb(hex); pdf.setFillColor(r,g,b) }
+  const setTxt  = (hex) => { const [r,g,b]=hex2rgb(hex); pdf.setTextColor(r,g,b) }
+  const setDraw = (hex) => { const [r,g,b]=hex2rgb(hex); pdf.setDrawColor(r,g,b) }
+  const newPage = () => { pdf.addPage(); y = pad }
+  const checkPageBreak = (needed) => { if (y + needed > H - 20) newPage() }
+
+  // ─── Colour palette (light / print-friendly) ────────────────────────
+  // White background, near-black body text, accent colours only for labels
+  const C = {
+    pageBg:     '#ffffff',
+    headerBg:   '#0f172a',   // dark navy header band
+    accent:     '#16a34a',   // green brand
+    textDark:   '#0f172a',   // headings
+    textBody:   '#1e293b',   // bullet/body copy — fully legible on white
+    textMuted:  '#475569',   // captions, secondary info
+    textLight:  '#ffffff',
+    borderLine: '#cbd5e1',
+    rowEven:    '#f8fafc',
+    rowOdd:     '#ffffff',
+    greenText:  '#15803d',
+    greenBg:    '#dcfce7',
+    amberText:  '#b45309',
+    amberBg:    '#fef3c7',
+    redText:    '#b91c1c',
+    redBg:      '#fee2e2',
+    blueText:   '#1d4ed8',
+    blueBg:     '#dbeafe',
+    summaryBg:  '#f1f5f9',
+    drillBg:    '#f8fafc',
+  }
+
+  // White page fill
+  setFill(C.pageBg)
+  pdf.rect(0, 0, W, H, 'F')
+
+  // ─── HEADER BAND ────────────────────────────────────────────────────
+  setFill(C.headerBg)
+  pdf.rect(0, 0, W, 30, 'F')
+  setFill(C.accent)
+  pdf.rect(0, 28, W, 3, 'F')
+
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(17)
+  setTxt(C.textLight)
+  pdf.text('Cricket Biomechanics Analysis', pad, 12)
+
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(8.5)
+  setTxt('#94a3b8')
+  pdf.text(
+    `Generated ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`,
+    pad, 21
+  )
+  pdf.text('CricketBio · AI-Powered Biomechanics', W - pad, 21, { align: 'right' })
+
+  y = 42
+
+  // ─── OVERALL SCORE BOX ──────────────────────────────────────────────
+  const scoreColor = overallScore >= 75 ? C.greenText : overallScore >= 50 ? C.amberText : C.redText
+  const scoreBg    = overallScore >= 75 ? C.greenBg   : overallScore >= 50 ? C.amberBg   : C.redBg
+
+  setFill(scoreBg)
+  setDraw(C.borderLine)
+  pdf.setLineWidth(0.4)
+  pdf.roundedRect(pad, y, W - pad * 2, 26, 3, 3, 'FD')
+
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(22)
+  setTxt(scoreColor)
+  pdf.text(String(overallScore), pad + 18, y + 16, { align: 'center' })
+
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(7)
+  setTxt(scoreColor)
+  pdf.text('/100', pad + 18, y + 22, { align: 'center' })
+
+  setDraw(C.borderLine)
+  pdf.setLineWidth(0.5)
+  pdf.line(pad + 32, y + 4, pad + 32, y + 22)
+
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(13)
+  setTxt(C.textDark)
+  pdf.text(overallLabel, pad + 38, y + 11)
+
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(8)
+  setTxt(C.textMuted)
+  pdf.text(
+    'Composite score: elbow extension · trunk alignment · head stability',
+    pad + 38, y + 19,
+    { maxWidth: W - pad * 2 - 42 }
+  )
+
+  y += 34
+
+  // ─── ANNOTATED FRAME ────────────────────────────────────────────────
+  if (annotatedFrame) {
+    checkPageBreak(90)
+    const imgW = 100
+    const imgH = 70
+    const imgX = (W - imgW) / 2
+
+    setFill('#f1f5f9')
+    setDraw(C.borderLine)
+    pdf.setLineWidth(0.4)
+    pdf.roundedRect(imgX - 3, y - 3, imgW + 6, imgH + 14, 3, 3, 'FD')
+
+    pdf.addImage(`data:image/jpeg;base64,${annotatedFrame}`, 'JPEG', imgX, y, imgW, imgH)
+
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(7.5)
+    setTxt(C.greenText)
+    pdf.text('Analyzed Release Point — Skeleton Overlay', W / 2, y + imgH + 7, { align: 'center' })
+
+    y += imgH + 20
+  }
+
+  // ─── SECTION HEADING helper ──────────────────────────────────────────
+  const sectionHeading = (title) => {
+    checkPageBreak(14)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(11)
+    setTxt(C.textDark)
+    pdf.text(title, pad, y)
+    y += 4
+    setDraw(C.accent)
+    pdf.setLineWidth(0.7)
+    pdf.line(pad, y, pad + 55, y)
+    setDraw(C.borderLine)
+    pdf.setLineWidth(0.3)
+    pdf.line(pad + 55, y, W - pad, y)
+    y += 7
+  }
+
+  // ─── METRICS TABLE ───────────────────────────────────────────────────
+  sectionHeading('Key Biomechanical Metrics')
+
+  const metricsRows = [
+    {
+      label: 'Elbow Angle at Release',
+      value: releaseAngle != null ? `${releaseAngle}°` : 'N/A',
+      badge: releaseAngle != null ? (releaseAngle >= 165 ? 'Legal Delivery' : 'Flexion Warning') : 'No Data',
+      badgeTxt: releaseAngle != null ? (releaseAngle >= 165 ? C.greenText : C.amberText) : C.amberText,
+      badgeBg:  releaseAngle != null ? (releaseAngle >= 165 ? C.greenBg   : C.amberBg)   : C.amberBg,
+      note: elbowPercentile || '',
+    },
+    {
+      label: 'Body Alignment (Trunk Tilt)',
+      value: bodyAlignmentAngle != null ? `${bodyAlignmentAngle}°` : 'N/A',
+      badge: bodyAlignmentAngle != null ? (bodyAlignmentAngle <= 15 ? 'Aligned' : 'Falling Away') : 'No Data',
+      badgeTxt: bodyAlignmentAngle != null ? (bodyAlignmentAngle <= 15 ? C.greenText : C.redText) : C.amberText,
+      badgeBg:  bodyAlignmentAngle != null ? (bodyAlignmentAngle <= 15 ? C.greenBg   : C.redBg)   : C.amberBg,
+      note: trunkPercentile || '',
+    },
+    {
+      label: 'Head Stability (Variance)',
+      value: headDropVariance != null ? headDropVariance.toFixed(4) : 'N/A',
+      badge: headDropVariance != null ? (headDropVariance <= 0.002 ? 'Stable' : 'Head Drop Detected') : 'No Data',
+      badgeTxt: headDropVariance != null ? (headDropVariance <= 0.002 ? C.greenText : C.amberText) : C.amberText,
+      badgeBg:  headDropVariance != null ? (headDropVariance <= 0.002 ? C.greenBg   : C.amberBg)   : C.amberBg,
+      note: headPercentile || '',
+    },
+    {
+      label: 'Frames Processed',
+      value: String(totalFrames),
+      badge: 'Live Data',
+      badgeTxt: C.blueText,
+      badgeBg:  C.blueBg,
+      note: `Release Frame: ${releaseFrame}`,
+    },
+  ]
+
+  const rowH = 16
+  const col0 = pad
+  const col1 = pad + 58
+  const col2 = pad + 90
+  const col3 = pad + 132
+
+  // Table header
+  setFill('#e2e8f0')
+  setDraw(C.borderLine)
+  pdf.setLineWidth(0.2)
+  pdf.rect(col0, y, W - pad * 2, 7, 'FD')
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(7)
+  setTxt(C.textMuted)
+  pdf.text('METRIC', col0 + 2, y + 5)
+  pdf.text('VALUE', col1, y + 5)
+  pdf.text('STATUS', col2, y + 5)
+  pdf.text('BENCHMARK', col3, y + 5)
+  y += 7
+
+  metricsRows.forEach((row, i) => {
+    checkPageBreak(rowH)
+    setFill(i % 2 === 0 ? C.rowEven : C.rowOdd)
+    setDraw(C.borderLine)
+    pdf.setLineWidth(0.2)
+    pdf.rect(col0, y, W - pad * 2, rowH, 'FD')
+
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(8.5)
+    setTxt(C.textBody)
+    pdf.text(row.label, col0 + 2, y + rowH / 2 + 1.5)
+
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(10)
+    setTxt(row.badgeTxt)
+    pdf.text(row.value, col1, y + rowH / 2 + 1.5)
+
+    const [btr, btg, btb] = hex2rgb(row.badgeTxt)
+    const [bbr, bbg, bbb] = hex2rgb(row.badgeBg)
+    pdf.setFillColor(bbr, bbg, bbb)
+    pdf.roundedRect(col2, y + 3, 36, 7, 2, 2, 'F')
+    pdf.setFontSize(6.5)
+    pdf.setTextColor(btr, btg, btb)
+    pdf.text(row.badge, col2 + 18, y + 8, { align: 'center' })
+
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(7.5)
+    setTxt(C.textMuted)
+    pdf.text(row.note, col3, y + rowH / 2 + 1.5, { maxWidth: W - pad - col3 })
+
+    y += rowH
+  })
+
+  y += 10
+
+  // ─── AI COACH FEEDBACK ───────────────────────────────────────────────
+  if (geminiCoaching) {
+    sectionHeading('AI Coach Feedback')
+
+    // Summary box
+    if (geminiCoaching.summary) {
+      const summaryLines = pdf.splitTextToSize(geminiCoaching.summary, W - pad * 2 - 12)
+      const boxH = summaryLines.length * 5.5 + 10
+      checkPageBreak(boxH + 4)
+      setFill(C.summaryBg)
+      setDraw(C.borderLine)
+      pdf.setLineWidth(0.3)
+      pdf.roundedRect(pad, y, W - pad * 2, boxH, 2, 2, 'FD')
+      // Green accent bar on left edge
+      setFill(C.accent)
+      pdf.rect(pad, y, 2.5, boxH, 'F')
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(9)
+      setTxt(C.textBody)
+      pdf.text(summaryLines, pad + 7, y + 7)
+      y += boxH + 10
+    }
+
+    // Strengths
+    if (geminiCoaching.strengths?.length) {
+      checkPageBreak(14)
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(9.5)
+      setTxt(C.greenText)
+      pdf.text('STRENGTHS', pad, y)
+      y += 7
+      geminiCoaching.strengths.forEach((s) => {
+        const lines = pdf.splitTextToSize(s, W - pad * 2 - 8)
+        checkPageBreak(lines.length * 5.5 + 6)
+        setFill(C.accent)
+        pdf.circle(pad + 1.5, y - 0.8, 1.2, 'F')
+        pdf.setFont('helvetica', 'normal')
+        pdf.setFontSize(9)
+        setTxt(C.textBody)
+        pdf.text(lines, pad + 6, y)
+        y += lines.length * 5.5 + 4
+      })
+      y += 4
+    }
+
+    // Areas to improve
+    if (geminiCoaching.areas_to_improve?.length) {
+      checkPageBreak(14)
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(9.5)
+      setTxt(C.amberText)
+      pdf.text('AREAS TO IMPROVE', pad, y)
+      y += 7
+      geminiCoaching.areas_to_improve.forEach((s) => {
+        const lines = pdf.splitTextToSize(s, W - pad * 2 - 8)
+        checkPageBreak(lines.length * 5.5 + 6)
+        const [ar, ag, ab] = hex2rgb('#d97706')
+        pdf.setFillColor(ar, ag, ab)
+        pdf.circle(pad + 1.5, y - 0.8, 1.2, 'F')
+        pdf.setFont('helvetica', 'normal')
+        pdf.setFontSize(9)
+        setTxt(C.textBody)
+        pdf.text(lines, pad + 6, y)
+        y += lines.length * 5.5 + 4
+      })
+      y += 4
+    }
+
+    // Drills
+    if (geminiCoaching.drills?.length) {
+      checkPageBreak(14)
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(9.5)
+      setTxt(C.blueText)
+      pdf.text('RECOMMENDED DRILLS', pad, y)
+      y += 7
+
+      geminiCoaching.drills.forEach((drill) => {
+        const title = `${drill.name}${drill.focus ? `  [${drill.focus}]` : ''}`
+        const nameLines = pdf.splitTextToSize(title, W - pad * 2 - 8)
+        const descLines = pdf.splitTextToSize(drill.description || '', W - pad * 2 - 12)
+        const blockH = nameLines.length * 5.5 + descLines.length * 5 + 14
+        checkPageBreak(blockH)
+
+        setFill(C.drillBg)
+        setDraw(C.borderLine)
+        pdf.setLineWidth(0.3)
+        pdf.roundedRect(pad, y, W - pad * 2, blockH, 2, 2, 'FD')
+        // Blue left bar
+        const [blr2, blg2, blb2] = hex2rgb(C.blueText)
+        pdf.setFillColor(blr2, blg2, blb2)
+        pdf.rect(pad, y, 2.5, blockH, 'F')
+
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(8.5)
+        setTxt(C.textDark)
+        pdf.text(nameLines, pad + 7, y + 7)
+
+        pdf.setFont('helvetica', 'normal')
+        pdf.setFontSize(8.5)
+        setTxt(C.textMuted)
+        pdf.text(descLines, pad + 9, y + 7 + nameLines.length * 5.5 + 2)
+
+        y += blockH + 5
+      })
+    }
+  }
+
+  // ─── FOOTER (light bar, legible) ─────────────────────────────────────
+  const totalPages = pdf.getNumberOfPages()
+  for (let i = 1; i <= totalPages; i++) {
+    pdf.setPage(i)
+    setFill('#0d1117')
+    pdf.rect(0, H - 12, W, 12, 'F')
+    setDraw('#1b2535')
+    pdf.setLineWidth(0.4)
+    pdf.line(pad, H - 12, W - pad, H - 12)
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(7)
+    setTxt('#7b8ba3')
+    pdf.text(`CricketBio · Biomechanics Analysis Report`, pad, H - 5)
+    pdf.text(`Page ${i} of ${totalPages}`, W - pad, H - 5, { align: 'right' })
+  }
+
+  pdf.save(`cricket-biomechanics-${new Date().toISOString().slice(0, 10)}.pdf`)
+}
+
+/* ====================================================================
+   EXPORT / SHARE BUTTONS
+   ==================================================================== */
+function ActionButtons({ analysisData }) {
+  const [showShareModal, setShowShareModal] = useState(false)
+  const [exporting, setExporting] = useState(false)
+
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      await exportToPDF(analysisData)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  // Build a minimal shareable URL using URL params (no server needed)
+  const shareUrl = (() => {
+    if (typeof window === 'undefined') return window.location.href
+    const params = new URLSearchParams()
+    if (analysisData?.releaseAngle != null)       params.set('ra', analysisData.releaseAngle)
+    if (analysisData?.overallScore != null)       params.set('sc', analysisData.overallScore)
+    if (analysisData?.bodyAlignmentAngle != null) params.set('ba', analysisData.bodyAlignmentAngle)
+    if (analysisData?.headDropVariance != null)   params.set('hv', analysisData.headDropVariance.toFixed(4))
+    if (analysisData?.overallLabel)               params.set('lb', analysisData.overallLabel)
+    return `${window.location.origin}/analysis/shared?${params.toString()}`
+  })()
+
+  return (
+    <>
+      {showShareModal && (
+        <ShareModal shareUrl={shareUrl} onClose={() => setShowShareModal(false)} />
+      )}
+
+      <div
+        style={{
+          display: 'flex',
+          gap: '10px',
+          flexWrap: 'wrap',
+          animation: 'an-fade-in 0.5s ease-out 0.1s both',
+        }}
+      >
+        <button
+          type="button"
+          id="btn-export"
+          onClick={handleExport}
+          disabled={exporting}
+          style={{
+            background: exporting ? T.accentDim : T.card,
+            color: exporting ? T.accent : T.text,
+            border: `1px solid ${exporting ? T.accentMid : T.border}`,
+            borderRadius: '8px',
+            padding: '9px 18px',
+            fontSize: '13px',
+            fontWeight: 600,
+            fontFamily: T.font,
+            cursor: exporting ? 'default' : 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '7px',
+            transition: 'border-color 0.2s, color 0.2s, background 0.2s',
+            opacity: exporting ? 0.8 : 1,
+          }}
+          onMouseEnter={(e) => { if (!exporting) { e.currentTarget.style.borderColor = T.accent; e.currentTarget.style.color = T.accent } }}
+          onMouseLeave={(e) => { if (!exporting) { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.text } }}
+        >
+          {exporting ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden style={{ animation: 'an-pulse 1s ease-in-out infinite' }}>
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
+              <path d="M12 6v6l4 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          )}
+          {exporting ? 'Generating PDF…' : 'Export PDF'}
+        </button>
+
+        <button
+          type="button"
+          id="btn-share"
+          onClick={() => setShowShareModal(true)}
+          style={{
+            background: T.card,
+            color: T.text,
+            border: `1px solid ${T.border}`,
+            borderRadius: '8px',
+            padding: '9px 18px',
+            fontSize: '13px',
+            fontWeight: 600,
+            fontFamily: T.font,
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '7px',
+            transition: 'border-color 0.2s, color 0.2s',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.borderColor = T.accent; e.currentTarget.style.color = T.accent }}
+          onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.text }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <circle cx="18" cy="5" r="3" stroke="currentColor" strokeWidth="2" />
+            <circle cx="6" cy="12" r="3" stroke="currentColor" strokeWidth="2" />
+            <circle cx="18" cy="19" r="3" stroke="currentColor" strokeWidth="2" />
+            <path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98" stroke="currentColor" strokeWidth="2" />
+          </svg>
+          Share
+        </button>
+      </div>
+    </>
   )
 }
 
@@ -1006,7 +1601,20 @@ export default function AnalysisPage() {
               Your bowling action has been analysed. Review the metrics and insights below.
             </p>
           </div>
-          <ActionButtons />
+          <ActionButtons analysisData={{
+              overallScore,
+              overallLabel: overallScore >= 80 ? 'Excellent' : overallScore >= 65 ? 'Good' : overallScore >= 50 ? 'Developing' : 'Needs Work',
+              releaseAngle,
+              bodyAlignmentAngle,
+              headDropVariance,
+              totalFrames,
+              releaseFrame,
+              annotatedFrame: pythonData.annotated_release_frame,
+              geminiCoaching: pythonData.gemini_coaching,
+              elbowPercentile,
+              trunkPercentile,
+              headPercentile,
+            }} />
         </div>
 
         {/* camera angle warning */}
